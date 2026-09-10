@@ -3,7 +3,7 @@
 Proyecto: erp-moda-distribuido — Sistema ERP distribuido para tiendas de moda
 Equipo: Juan Esteban Cabral Bautista, Jair Enrique Polo Chamorro, Andres Felipe Vargas Serrato
 
-## 1. Stack tecnológico
+## 1. Stack tecnológico preliminar
 
 - **Backend:** .NET 8 (ASP.NET Core Web API)
 - **Módulo de IA:** Python + OpenCV, como microservicio independiente que se comunica con Inventario por HTTP
@@ -12,7 +12,13 @@ Equipo: Juan Esteban Cabral Bautista, Jair Enrique Polo Chamorro, Andres Felipe 
 - **Caché/colas:** Redis
 - **Infraestructura local:** Docker + Docker Compose
 
-*Decisión tomada el [fecha]: el backend migra de FastAPI a .NET por [razón]. La IA permanece en Python, lo que refuerza la naturaleza distribuida del sistema.*
+*Decisión preliminar tomada el [fecha]: el backend migra de FastAPI a .NET por [razón]. La IA permanece en Python, lo que refuerza la naturaleza distribuida del sistema. Esta decisión se justificará formalmente una vez aprobados los requerimientos.*
+
+## 1.1 Proceso de decisión de stack
+
+- Levantamiento de requerimientos (Sprint 0).
+- Evaluación de alternativas con base en los requerimientos (inicio del Sprint 1).
+- Ratificación o ajuste de la decisión en este documento.
 
 ## 2. División de módulos
 

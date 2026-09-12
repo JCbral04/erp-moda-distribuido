@@ -8,7 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
-builder.Services.AddScoped<IVentasService, VentasService>();
+builder.Services.AddSingleton<IVentasService, VentasService>();
 
 var app = builder.Build();
 

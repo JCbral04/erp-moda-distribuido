@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: erp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: erpuser
+      POSTGRES_PASSWORD: erppass
+      POSTGRES_DB: erp_moda
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - erp-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erpuser -d erp_moda"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: erp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - erp-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ErpModa.Api/Dockerfile
+    container_name: erp-backend
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Default: Host=db;Port=5432;Database=erp_moda;Username=erpuser;Password=erppass
+      Redis__ConnectionString: redis:6379
+      IaService__BaseUrl: http://ia:8000
+    ports:
+      - "5000:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - erp-net
+
+  ia:
+    build: ./ai
+    container_name: erp-ia
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    networks:
+      - erp-net
+
+volumes:
+  pgdata:
+
+networks:
+  erp-net:
+    driver: bridge

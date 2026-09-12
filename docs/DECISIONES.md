@@ -1,0 +1,60 @@
+# DECISIONES.md — Acuerdos del equipo
+
+Proyecto: erp-moda-distribuido — Sistema ERP distribuido para tiendas de moda
+Equipo: Juan Esteban Cabral Bautista, Jair Enrique Polo Chamorro, Andres Felipe Vargas Serrato
+
+## 1. Stack tecnológico
+
+- **Backend:** .NET 8 (ASP.NET Core Web API)
+- **Módulo de IA:** Python + OpenCV, como microservicio independiente que se comunica con Inventario por HTTP
+- **Frontend:** React + TypeScript (Vite)
+- **Base de datos:** PostgreSQL
+- **Caché/colas:** Redis
+- **Infraestructura local:** Docker + Docker Compose
+
+*Decisión tomada el 11/09/2026: se elige .NET 8 para el backend por su tipado fuerte, su ecosistema empresarial maduro para sistemas ERP, su soporte multiplataforma (el equipo trabaja en Linux y Windows) y su relevancia en el mercado laboral. La IA permanece en Python como microservicio independiente, lo que refuerza la naturaleza distribuida del sistema. Esta decisión se ratificará al inicio del Sprint 1 una vez aprobados los requerimientos.*
+
+## 1.1 Proceso de decisión de stack
+
+- Levantamiento de requerimientos (Sprint 0).
+- Evaluación de alternativas con base en los requerimientos (inicio del Sprint 1).
+- Ratificación o ajuste de la decisión en este documento.
+
+## 2. División de módulos
+
+| Integrante | Módulos |
+|---|---|
+| Juan Esteban (líder) | Arquitectura, integración, Dashboard BI |
+| Jair | Inventario (núcleo) + IA |
+| Andres | Ventas, Facturación, Proveedores, Análisis |
+
+Cada quien es dueño del código de sus módulos: sus PRs los revisa otro, y los PRs de otros que toquen sus módulos los revisa él.
+
+## 3. Convención de ramas
+
+- `main` — protegida, solo entra por PR aprobado
+- `feature/nombre-corto` — funcionalidades nuevas
+- `fix/nombre-corto` — corrección de errores
+- `docs/nombre-corto` — documentación
+- `chore/nombre-corto` — configuración y mantenimiento
+
+## 4. Convención de commits
+
+`tipo: descripción corta en presente`
+
+Tipos: `feat`, `fix`, `docs`, `chore`, `test`, `refactor`
+
+Ejemplo: `feat: agregar endpoint de registro de ventas`
+
+## 5. Reglas de trabajo
+
+- Todo cambio a main entra por PR con **1 aprobación** mínima
+- Los PRs se vinculan a su tarjeta con `Closes #N` en la descripción
+- Máximo 1 tarjeta en "En curso" por persona
+- Nada pasa más de 2 días en "En revisión"
+- Daily corta por WhatsApp/llamada: qué hice, qué haré, qué me bloquea
+- Compromiso de horas semanales por persona: [acordar en la llamada]
+
+## 6. Contratos antes que implementación
+
+Antes de integrar dos módulos, se define primero el contrato (endpoint, formato de datos) en este documento o en docs/. Nadie implementa contra suposiciones.

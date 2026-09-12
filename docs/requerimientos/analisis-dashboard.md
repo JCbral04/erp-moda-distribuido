@@ -1,6 +1,6 @@
 # Requerimientos — Análisis y Dashboard BI
 
-**Responsable:** Juan Esteban Cabral Bautista  
+**Responsable:** Andres Felipe Vargas Serrato  
 **Fecha:** 10/09/2026  
 **Estado:** Borrador
 
@@ -122,4 +122,3 @@ Módulo de inteligencia de negocios. Consume datos de Ventas, Inventario y Prove
 - [ ] ¿Exportar reportes a PDF/Excel?
 - [ ] ¿Alertas automáticas por correo?
 - [ ] ¿Predicción de demanda con ML?
-- [ ] INCONSISTENCIA: Este requerimiento asigna Análisis y Dashboard BI a Juan, mientras [DECISIONES.md](../DECISIONES.md) asigna Análisis a Andres. El equipo debe ratificar el responsable de Análisis.

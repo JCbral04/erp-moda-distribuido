@@ -12,6 +12,33 @@ Núcleo del ERP. Gestiona productos, variantes (talla/color), stock y movimiento
 
 ---
 
+## 1.1 Modelo de producto y variante
+
+El catálogo se organiza en dos niveles: el **producto** (la prenda en general) y sus **variantes** (cada combinación de talla y color con stock propio).
+
+Ejemplo:
+
+```text
+Producto
+├── Camiseta básica
+├── Categoría: Camisetas
+└── Variantes
+    ├── Negro / S
+    ├── Negro / M
+    ├── Negro / L
+    ├── Blanco / S
+    └── Blanco / M
+```
+
+Reglas del modelo:
+
+- Cada variante tiene su propio stock, SKU e identificador único
+- El precio se define en el producto; las variantes pueden tener sobreprecio opcional
+- Ventas siempre descuenta stock de una variante específica, nunca del producto general
+- La IA identifica el producto por visión; la variante exacta se confirma manualmente o por código
+
+---
+
 ## 2. Actores
 
 | Actor | Descripción |
@@ -142,6 +169,4 @@ Núcleo del ERP. Gestiona productos, variantes (talla/color), stock y movimiento
 
 - [ ] ¿Cómo manejar devoluciones? ¿Aumentan stock automáticamente?
 - [ ] ¿Alertas de stock bajo por correo o solo en dashboard?
-- [ ] ¿Código de barras/QR para productos?
-- [ ] INCONSISTENCIA: La división de módulos de [DECISIONES.md](../DECISIONES.md) asigna Análisis a Andres, mientras el requerimiento de Análisis y Dashboard BI asigna su responsabilidad a Juan. El equipo debe ratificar el responsable.
-- [ ] INCONSISTENCIA: Proveedores contempla recepciones parciales, pero debe confirmarse si estas generan un estado específico de la orden y cómo se refleja en Inventario.
+- [ ] ¿Código de barras/QR para productos

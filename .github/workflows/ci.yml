@@ -26,7 +26,7 @@ jobs:
         run: dotnet build backend/ErpModa.sln --configuration Release --no-restore
 
       - name: Ejecutar tests
-        run: dotnet test backend/ErpModa.sln --no-restore --verbosity normal
+        run: dotnet test backend/ErpModa.sln --configuration Release --no-build --no-restore --verbosity normal
 
   ia:
     name: Microservicio IA (Python)

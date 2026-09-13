@@ -22,11 +22,17 @@ Incluida la recepción de proveedor, aunque el contrato de Proveedores (`docs/re
 
 Se confirmó explícitamente conmigo antes de implementar: se incluyeron `stock_minimo` por variante y timestamps de auditoría; se descartaron `stock_resultante` (derivable) y `requiere_confirmacion` (la lógica de confirmación manual de IA no existe todavía, agregar el campo solo no resuelve nada).
 
+### 4. `cantidad` con signo obligatorio según `tipo` (agregado en revisión)
+
+`venta` siempre es salida, `anulacion_venta`/`recepcion_proveedor` siempre son entrada, pero el `CHECK` original solo exigía `cantidad <> 0`, no el signo correcto. Se agregó `ck_mov_direccion_coherente` — detalle completo en `docs/inventario/esquema-bd.md` sección 3.7.
+
 ## Incidencia durante la implementación
 
 Al revisar el script SQL manualmente (sin ejecutarlo todavía) se detectó un bug real en el constraint `ck_mov_referencia_coherente`: usaba comparaciones normales (`referencia_tipo = 'venta'`) para validar que cada tipo de movimiento tuviera la referencia correcta. En SQL, una comparación contra `NULL` evalúa a `NULL` (no a `FALSE`), y Postgres considera **satisfecho** un `CHECK` cuyo resultado es `NULL` — no solo cuando es `TRUE`. Esto significaba que un movimiento `tipo='venta'` con `referencia_tipo` vacío habría pasado el constraint sin ser rechazado, dejando pasar datos inconsistentes silenciosamente.
 
 **Solución:** reemplazar las comparaciones por `IS NOT DISTINCT FROM`, que siempre evalúa a `TRUE`/`FALSE` y nunca a `NULL`. Lección: cualquier `CHECK` que combine una columna nullable con `=` necesita revisarse contra el caso `NULL` explícitamente — no basta con probar los casos "felices".
+
+**Segunda incidencia (detectada en revisión de PR, no en autorevisión):** Andrés revisó el PR y notó que `cantidad` es firmada y la documentación dice que `venta`/`anulacion_venta`/`recepcion_proveedor` tienen signo fijo, pero ningún `CHECK` lo exigía — se podía insertar una `venta` con cantidad positiva sin que el esquema lo rechazara. Se agregó `ck_mov_direccion_coherente` (ver sección "Decisiones técnicas", punto 4). A diferencia de la incidencia anterior, aquí no hizo falta `IS NOT DISTINCT FROM`: `tipo` y `cantidad` son `NOT NULL`, así que la comparación normal es segura. Lección: la revisión de otra persona sigue encontrando huecos que la autorevisión no cubrió — vale la pena el segundo par de ojos incluso después de una verificación exhaustiva propia.
 
 ## Verificación
 
@@ -51,7 +57,18 @@ Las 3 tablas se crearon sin errores. Se probaron manualmente, con `psql` interac
 | Venta con `referencia_tipo` correcto | Funciona | ✅ |
 | Variante duplicada (mismo producto+talla+color) | Falla | ✅ `uq_variantes_producto_talla_color` |
 
-Todo se deshizo con `ROLLBACK` final — no quedaron datos de prueba en la base. Confirmado el 13/09/2026.
+Tras agregar `ck_mov_direccion_coherente` (revisión de Andrés), se reaplicó el script en una base limpia y se probaron 6 casos adicionales, más los 8 anteriores para confirmar que no hubo regresión:
+
+| Prueba | Esperado | Resultado |
+|:---|:---|:---|
+| Venta con cantidad positiva | Falla | ✅ `ck_mov_direccion_coherente` |
+| Anulación de venta con cantidad negativa | Falla | ✅ `ck_mov_direccion_coherente` |
+| Recepción de proveedor con cantidad negativa | Falla | ✅ `ck_mov_direccion_coherente` |
+| Recepción de proveedor con cantidad positiva | Funciona | ✅ |
+| Ajuste manual con cantidad negativa | Funciona | ✅ (sigue permitiendo ambos signos) |
+| Detección IA con cantidad negativa | Funciona | ✅ (sigue permitiendo ambos signos) |
+
+Todo se deshizo con `ROLLBACK` final en ambas rondas — no quedaron datos de prueba en la base. Confirmado el 13/09/2026.
 
 ## Pendiente
 

@@ -58,3 +58,15 @@ Ejemplo: `feat: agregar endpoint de registro de ventas`
 ## 6. Contratos antes que implementación
 
 Antes de integrar dos módulos, se define primero el contrato (endpoint, formato de datos) en este documento o en docs/. Nadie implementa contra suposiciones.
+
+## 7. Seguridad de la cadena de suministro (issue #20)
+
+- **Dependabot alerts + security updates:** activados en Settings — alertas de CVEs y PRs automáticos con parches
+- **CodeQL (default setup):** análisis estático de C# y Python en cada push/PR a `main` + escaneo semanal
+- **Secret scanning + push protection:** bloquea secretos *antes* de que entren al historial (protege mientras migramos las credenciales del compose a `.env`)
+- **`dependabot.yml`:** actualizaciones semanales (lunes), máx. 5 PRs abiertos por ecosistema, sin reviewers fijos (el equipo rota), sin agrupar (un PR por dependencia para identificar qué rompe)
+- **Ecosistemas:** NuGet (`/backend`), pip (`/ai`), GitHub Actions (`/`). Pendiente: npm (`/frontend`) cuando se cierre el issue #11
+- Los PRs de Dependabot pasan por la protección de `main` como cualquier PR (1 aprobación)
+- El check de CodeQL se incluirá en "Require status checks" cuando se active (pendiente del issue #3)
+
+*Decisión tomada el 12/09/2026: el sistema ya tiene 3 ecosistemas de dependencias (pronto 4 con el frontend) y sin gestión de vulnerabilidades un CVE puede comprometer todo el sistema distribuido. Se elige la configuración por defecto/automática en todo lo posible: en un equipo pequeño, la mejor seguridad es la que funciona sin mantenimiento manual.*

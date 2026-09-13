@@ -75,6 +75,15 @@ CREATE TABLE movimientos_stock (
             (tipo IN ('venta', 'anulacion_venta') AND referencia_tipo IS NOT DISTINCT FROM 'venta') OR
             (tipo = 'recepcion_proveedor' AND referencia_tipo IS NOT DISTINCT FROM 'orden_compra') OR
             (tipo IN ('ajuste_manual', 'deteccion_ia') AND referencia_tipo IS NULL)
+        ),
+    -- Nota: a diferencia del constraint anterior, aqui SI es seguro usar "=" y "<"/">"
+    -- normales: tipo y cantidad son ambas NOT NULL, asi que estas comparaciones nunca
+    -- evaluan a NULL (no aplica la misma trampa de CHECK+NULL).
+    CONSTRAINT ck_mov_direccion_coherente
+        CHECK (
+            (tipo = 'venta' AND cantidad < 0) OR
+            (tipo IN ('anulacion_venta', 'recepcion_proveedor') AND cantidad > 0) OR
+            (tipo IN ('ajuste_manual', 'deteccion_ia'))
         )
 );
 

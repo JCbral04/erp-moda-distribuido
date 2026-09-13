@@ -106,6 +106,23 @@ No existe ningún módulo de usuarios/autenticación en el repo todavía, así q
 
 `tipo` y `referencia_tipo` usan `VARCHAR` con `CHECK` en vez de un tipo `ENUM` de Postgres, porque agregar valores a un ENUM requiere `ALTER TYPE ... ADD VALUE` y este esquema es interino pre-EF Core — más fácil de ampliar mientras el modelo de datos todavía se está afinando.
 
+### 3.7 `cantidad` con signo obligatorio según `tipo`
+
+*Agregado a partir de la revisión de Andrés sobre el PR.*
+
+La tabla de la sección 4 ya documentaba que `venta` siempre es salida (negativa), `anulacion_venta` y `recepcion_proveedor` siempre son entrada (positiva), y solo `ajuste_manual`/`deteccion_ia` pueden ser cualquiera de los dos — pero el `CHECK (cantidad <> 0)` original solo impedía cantidad cero, no el signo incorrecto. Se agregó `ck_mov_direccion_coherente` para exigir el signo correcto según el tipo:
+
+```sql
+CONSTRAINT ck_mov_direccion_coherente
+    CHECK (
+        (tipo = 'venta' AND cantidad < 0) OR
+        (tipo IN ('anulacion_venta', 'recepcion_proveedor') AND cantidad > 0) OR
+        (tipo IN ('ajuste_manual', 'deteccion_ia'))
+    )
+```
+
+A diferencia de `ck_mov_referencia_coherente` (sección 3.4/comentario en el SQL), aquí **no hace falta `IS NOT DISTINCT FROM`**: `tipo` y `cantidad` son ambas `NOT NULL`, así que `cantidad < 0`/`cantidad > 0` siempre evalúan a `TRUE` o `FALSE`, nunca a `NULL` — no aplica la misma trampa de `CHECK` + `NULL`.
+
 ---
 
 ## 4. Tipos de movimiento

@@ -1,3 +1,5 @@
+using ErpModa.Api.Inventario.Interfaces;
+using ErpModa.Api.Inventario.Services;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Services;
 
@@ -9,6 +11,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
 builder.Services.AddSingleton<IVentasService, VentasService>();
+builder.Services.AddSingleton<IProductosService, ProductosService>();
 
 var app = builder.Build();
 

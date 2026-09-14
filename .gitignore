@@ -433,3 +433,54 @@ FodyWeavers.xsd
 
 # Secretos del proyecto
 .env
+
+# ─────────────────────────────────────────────────────────────
+# Backend .NET (C#) — build artifacts, recursivo
+# ─────────────────────────────────────────────────────────────
+# Carpetas de compilación de MSBuild/Visual Studio/dotnet (cualquier nivel)
+**/bin/
+**/obj/
+
+# Archivos de compilación generados
+*.dll
+*.exe
+*.pdb
+*.cache
+*.nupkg
+
+# ─────────────────────────────────────────────────────────────
+# Bases de datos locales
+# ─────────────────────────────────────────────────────────────
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ─────────────────────────────────────────────────────────────
+# Módulo IA (Python)
+# ─────────────────────────────────────────────────────────────
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pyvenv.cfg
+
+# Cachés de bytecode y de herramientas Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ─────────────────────────────────────────────────────────────
+# Secretos y configuración local (copias locales de configs)
+# ─────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.local

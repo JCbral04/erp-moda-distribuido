@@ -19,7 +19,9 @@ namespace ErpModa.Api.Ventas.Controllers
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<VentaResponseDto>>> GetAll(string? estado, DateTime? fecha)
+        public async Task<ActionResult<IEnumerable<VentaResponseDto>>> GetAll(
+            [FromQuery] string? estado,
+            [FromQuery] DateTime? fecha)
         {
             try
             {

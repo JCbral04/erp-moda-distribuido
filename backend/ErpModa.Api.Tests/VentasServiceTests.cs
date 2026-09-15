@@ -261,7 +261,10 @@ public class VentasServiceTests
         var service = CreateService();
         var creada = await service.CreateAsync(VentaValida());
 
-        var result = await service.GetAllAsync(fecha: DateTime.UtcNow.Date);
+        // El día calendario local del negocio (UTC-5); el filtro interpreta ?fecha=
+        // como "día local" y lo convierte a un rango UTC.
+        var hoyLocal = DateTime.UtcNow.AddHours(-5).Date;
+        var result = await service.GetAllAsync(fecha: hoyLocal);
 
         Assert.Contains(result, v => v.Id == creada.Id);
     }
@@ -285,7 +288,8 @@ public class VentasServiceTests
         await service.ConfirmarAsync(confirmada.Id);
         await service.CreateAsync(VentaValida("Tarjeta"));
 
-        var result = await service.GetAllAsync(estado: "Confirmada", fecha: DateTime.UtcNow.Date);
+        var hoyLocal = DateTime.UtcNow.AddHours(-5).Date;
+        var result = await service.GetAllAsync(estado: "Confirmada", fecha: hoyLocal);
 
         Assert.Single(result);
         Assert.Equal(confirmada.Id, result.First().Id);

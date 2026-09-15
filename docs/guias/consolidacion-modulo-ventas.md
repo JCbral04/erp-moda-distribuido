@@ -1,6 +1,6 @@
 # Guía: Consolidación del módulo de Ventas
 
-**Responsable:** Andres Felipe Vargas Serrato (Ventas, Facturación, Proveedores) · **Fecha:** 14/09/2026
+**Issue relacionado:** #<issue> · **Responsable:** Andres Felipe Vargas Serrato (Ventas, Facturación, Proveedores) · **Fecha:** 15/09/2026
 
 ## ¿Qué se hizo?
 
@@ -93,11 +93,20 @@ Se creó `backend/ErpModa.Api.Tests` (xUnit, agregado a `ErpModa.sln`, target `n
 
 `GET /api/ventas` recibe `estado` y `fecha` como query parameters opcionales y el Controller los delega tal cual al servicio. La conversión de "texto de estado" a `EstadoVenta` (con validación y `400` para valores inválidos) y la aplicación de filtros viven en el servicio. El resumen solo cuenta y suma estados definidos: `cantidadVentas` es el conteo total, `totalVentasConfirmadas` suma únicamente `Confirmada`, y las anuladas nunca aportan al total vendido.
 
+### 9. Refactor por Code Review (concurrencia, filtro de fecha, helpers, stub)
+
+Cambios aplicados en esta consolidación para endurecer el `VentasService` en memoria:
+
+- **Concurrencia:** todas las lecturas/escrituras sobre `_ventas` y los contadores se serializan con `lock (_syncLock)`. Los ids usan `Interlocked.Increment` (por eso los contadores arrancan en `0`: el primer valor asignado es `1`). `GetAllAsync` materializa con `.ToList()` dentro del `lock` para evitar el error *"Collection was modified"* si otro hilo muta la lista mientras se serializa la respuesta.
+- **Filtro de fecha por rango UTC (zona local UTC-5):** `?fecha=` se interpreta como el día calendario en la zona del negocio (Colombia, UTC-5) y se convierte en un rango UTC `[inicioUtc, inicioUtc + 1 día)` — es decir `05:00Z` a `05:00Z` del día siguiente. La comparación es `v.Fecha >= inicio && v.Fecha < fin`, no `v.Fecha.Date == fecha`. Así el filtro es determinista aunque `Venta.Fecha` se almacene como `DateTime.UtcNow` (en memoria no existe timezone aplicada).
+- **Helpers:** `GetVentaOrThrow(id)` centraliza el "no existe la venta" que se repetía en confirmar/anular; `ParseEnumByName<TEnum>` (genérico, `where TEnum : struct, Enum`) unifica el parsing/validación de `MetodoPago` y del filtro `EstadoVenta` que antes vivía duplicado.
+- **Stub de integración con Inventario:** existe `DescontarStockInventario(Venta)` como stub que lanza `NotImplementedException("Pendiente: Integración con módulo de inventario")`. Las llamadas en `ConfirmarAsync`/`AnularAsync` están **comentadas** y referencian `docs/contratos/ventas-inventario.md`. Decisión deliberada: NO se invoca todavía porque eso rompería confirmar/anular mientras el contrato no exista; al activarla, CI fallará de forma explícita hasta implementar la integración.
+
 ## Verificación
 
 ```bash
-dotnet build backend/ErpModa.sln --configuration Debug   # compila sin warnings ni errores
-dotnet test  backend/ErpModa.sln --configuration Debug   # 30 pruebas, todas correctas
+dotnet build backend/ErpModa.sln --configuration Release   # 0 warnings, 0 errores
+dotnet test  backend/ErpModa.sln --configuration Release --no-build   # 30 pruebas, todas correctas
 ```
 
 Swagger verificado: al levantar la API, `/swagger` lista los 6 endpoints de Ventas en `/api/Ventas` (incluidos `GET /api/Ventas/resumen` y el `GET /api/Ventas` con query params `estado`/`fecha`), y `/swagger/v1/swagger.json` responde `200` describiendo los DTOs `CrearVentaDto`, `AnularVentaDto`, `VentaResponseDto` y `VentasResumenDto`.

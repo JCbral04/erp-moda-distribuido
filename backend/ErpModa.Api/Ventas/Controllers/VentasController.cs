@@ -19,9 +19,25 @@ namespace ErpModa.Api.Ventas.Controllers
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<VentaResponseDto>>> GetAll()
+        public async Task<ActionResult<IEnumerable<VentaResponseDto>>> GetAll(
+            [FromQuery] string? estado,
+            [FromQuery] DateTime? fecha)
         {
-            var result = await _service.GetAllAsync();
+            try
+            {
+                var result = await _service.GetAllAsync(estado, fecha);
+                return Ok(result);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpGet("resumen")]
+        public async Task<ActionResult<VentasResumenDto>> GetResumen()
+        {
+            var result = await _service.GetResumenAsync();
             return Ok(result);
         }
 
@@ -41,6 +57,46 @@ namespace ErpModa.Api.Ventas.Controllers
             {
                 var created = await _service.CreateAsync(crearDto);
                 return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpPost("{id}/confirmar")]
+        public async Task<ActionResult<VentaResponseDto>> Confirmar(int id)
+        {
+            try
+            {
+                var result = await _service.ConfirmarAsync(id);
+                return Ok(result);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpPost("{id}/anular")]
+        public async Task<ActionResult<VentaResponseDto>> Anular(int id, [FromBody] AnularVentaDto anularDto)
+        {
+            try
+            {
+                var result = await _service.AnularAsync(id, anularDto);
+                return Ok(result);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(ex.Message);
             }
             catch (ArgumentException ex)
             {

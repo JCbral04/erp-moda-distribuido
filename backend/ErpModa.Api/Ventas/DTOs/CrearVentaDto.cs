@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace ErpModa.Api.Ventas.DTOs
 {
@@ -10,5 +9,8 @@ namespace ErpModa.Api.Ventas.DTOs
     {
         // Fecha removida; se genera en backend
         public List<DetalleCrearDto> Detalles { get; set; } = new();
+
+        // Método de pago válido: "Efectivo", "Tarjeta" o "Transferencia"
+        public string? MetodoPago { get; set; }
     }
 }

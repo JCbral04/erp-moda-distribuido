@@ -433,3 +433,6 @@ FodyWeavers.xsd
 
 # Secretos del proyecto
 .env
+
+# Evidencia local de la PoC de deteccion de IA (issue #7) - no se versiona
+ai/evidencia/

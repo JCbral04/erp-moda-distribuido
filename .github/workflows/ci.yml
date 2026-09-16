@@ -43,5 +43,5 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r ai/requirements.txt
 
-      - name: Verificar sintaxis de main.py
-        run: python -m py_compile ai/main.py
+      - name: Verificar sintaxis de los scripts de IA
+        run: python -m py_compile ai/main.py ai/deteccion.py ai/generar_video_prueba.py

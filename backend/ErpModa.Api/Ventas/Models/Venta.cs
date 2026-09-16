@@ -10,7 +10,9 @@ namespace ErpModa.Api.Ventas.Models
         public int Id { get; set; }
         public DateTime Fecha { get; set; }
         public decimal Total { get; set; }
-        public string? Estado { get; set; }
-        public List<DetalleVenta>? Detalles { get; set; }
+        public EstadoVenta Estado { get; set; }
+        public MetodoPago MetodoPago { get; set; }
+        public string? MotivoAnulacion { get; set; }
+        public List<DetalleVenta> Detalles { get; set; } = new();
     }
 }

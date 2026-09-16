@@ -8,6 +8,8 @@ namespace ErpModa.Api.Ventas.DTOs
         public DateTime Fecha { get; set; }
         public decimal Total { get; set; }
         public string? Estado { get; set; }
+        public string? MetodoPago { get; set; }
+        public string? MotivoAnulacion { get; set; }
         public List<DetalleVentaDto> Detalles { get; set; } = new();
     }
 }

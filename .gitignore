@@ -477,6 +477,9 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Evidencia local de la PoC de deteccion de prendas (issue #7)
+ai/evidencia/
+
 # ─────────────────────────────────────────────────────────────
 # Secretos y configuración local (copias locales de configs)
 # ─────────────────────────────────────────────────────────────

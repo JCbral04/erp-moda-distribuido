@@ -108,7 +108,7 @@ Microservicio independiente en Python que usa visión por computador para detect
 
 ## 7. Pendientes / Por definir
 
-- [ ] ¿Qué modelo usar? (YOLO, EfficientDet, custom)
+- [x] ¿Qué modelo usar? Para la prueba de viabilidad (issue #7) se usó visión clásica con OpenCV (sustracción de fondo MOG2 + contornos), sin deep learning — ver `docs/guias/deteccion-prendas-ia.md`. La elección del modelo de producción (YOLO, EfficientDet, custom) sigue abierta.
 - [ ] ¿Cámara IP(Generalmente Usada para vigilancia) o USB(Camara que se conecta directamente a un computador)?
 - [ ] ¿Procesamiento local o en la nube?
 - [ ] ¿Entrenamiento con fotos propias de la tienda?

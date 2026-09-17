@@ -100,19 +100,18 @@ Cambios aplicados en esta consolidación para endurecer el `VentasService` en me
 - **Concurrencia:** todas las lecturas/escrituras sobre `_ventas` y los contadores se serializan con `lock (_syncLock)`. Los ids usan `Interlocked.Increment` (por eso los contadores arrancan en `0`: el primer valor asignado es `1`). `GetAllAsync` materializa con `.ToList()` dentro del `lock` para evitar el error *"Collection was modified"* si otro hilo muta la lista mientras se serializa la respuesta.
 - **Filtro de fecha por rango UTC (zona local UTC-5):** `?fecha=` se interpreta como el día calendario en la zona del negocio (Colombia, UTC-5) y se convierte en un rango UTC `[inicioUtc, inicioUtc + 1 día)` — es decir `05:00Z` a `05:00Z` del día siguiente. La comparación es `v.Fecha >= inicio && v.Fecha < fin`, no `v.Fecha.Date == fecha`. Así el filtro es determinista aunque `Venta.Fecha` se almacene como `DateTime.UtcNow` (en memoria no existe timezone aplicada).
 - **Helpers:** `GetVentaOrThrow(id)` centraliza el "no existe la venta" que se repetía en confirmar/anular; `ParseEnumByName<TEnum>` (genérico, `where TEnum : struct, Enum`) unifica el parsing/validación de `MetodoPago` y del filtro `EstadoVenta` que antes vivía duplicado.
-- **Stub de integración con Inventario:** existe `DescontarStockInventario(Venta)` como stub que lanza `NotImplementedException("Pendiente: Integración con módulo de inventario")`. Las llamadas en `ConfirmarAsync`/`AnularAsync` están **comentadas** y referencian `docs/contratos/ventas-inventario.md`. Decisión deliberada: NO se invoca todavía porque eso rompería confirmar/anular mientras el contrato no exista; al activarla, CI fallará de forma explícita hasta implementar la integración.
+- **Integración con Inventario (implementada):** `ConfirmarAsync` valida y descuenta stock (validación de todas las líneas antes de mutar, sin descuentos parciales) y registra los movimientos `movimientos_stock` tipo `venta`/`anulacion_venta` tal como define `docs/inventario/schema.sql` y `docs/contratos/ventas-inventario.md` (opción b). Toda la operación (descuento + estado + factura, o restauración + estado + factura anulada) corre en una **transacción EF Core** (`IsolationLevel.Serializable` cuando hay proveedor relacional; el guard de estado garantiza no descontar/restaurar dos veces). El antiguo stub `DescontarStockInventarioAsync`/`RestaurarStockInventarioAsync` fue eliminado.
 
 ## Verificación
 
 ```bash
-dotnet build backend/ErpModa.sln --configuration Release   # 0 warnings, 0 errores
-dotnet test  backend/ErpModa.sln --configuration Release --no-build   # 30 pruebas, todas correctas
+dotnet build backend/ErpModa.sln --configuration Release                    # 0 warnings, 0 errores
+dotnet test  backend/ErpModa.sln --configuration Release --no-build         # 54 pruebas, todas correctas
 ```
 
-Swagger verificado: al levantar la API, `/swagger` lista los 6 endpoints de Ventas en `/api/Ventas` (incluidos `GET /api/Ventas/resumen` y el `GET /api/Ventas` con query params `estado`/`fecha`), y `/swagger/v1/swagger.json` responde `200` describiendo los DTOs `CrearVentaDto`, `AnularVentaDto`, `VentaResponseDto` y `VentasResumenDto`.
+Swagger verificado: al levantar la API, `/swagger` lista los endpoints de Ventas en `/api/Ventas` (incluidos `GET /api/Ventas/resumen` y el `GET /api/Ventas` con query params `estado`/`fecha`), y `/swagger/v1/swagger.json` responde `200` describiendo los DTOs `CrearVentaDto`, `AnularVentaDto`, `VentaResponseDto` y `VentasResumenDto`. `POST /api/Ventas/{id}/confirmar` responde `409 conflict` con `codigo: "stock_insuficiente"` cuando el stock no alcanza.
 
 ## Pendiente
 
-- Aprobar el contrato Ventas→Inventario (`docs/contratos/ventas-inventario.md`) e implementar la validación/descuento de stock al confirmar y la restauración al anular.
 - Definir cuándo nace el modelo de `cliente` y `vendedor` para incorporarlos a la venta (HU-002, HU-003).
-- Persistencia real (PostgreSQL/EF Core) y generación automática de factura (RN-004).
+- Verificar la integración contra PostgreSQL real (los tests usan EF Core InMemory; la transacción `Serializable` solo se activa con proveedor relacional). No se usa `Database.Migrate()` al iniciar.

@@ -487,3 +487,14 @@ ai/evidencia/
 .env.*
 !.env.example
 *.local
+
+# ─────────────────────────────────────────────────────────────
+# ASP.NET Core User Secrets y appsettings locales
+# ─────────────────────────────────────────────────────────────
+# NOTA: El archivo secrets.json de dotnet user-secrets vive en
+# %APPDATA%\Microsoft\UserSecrets\ (fuera del repo) y NUNCA
+# puede ser commiteado accidentalmente. Las reglas siguientes
+# protegen variantes locales de appsettings por seguridad extra.
+appsettings.*.local.json
+appsettings.local.json
+secrets.json

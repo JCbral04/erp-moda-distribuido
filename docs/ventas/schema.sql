@@ -45,7 +45,7 @@ CREATE INDEX ix_ventas_estado ON ventas (estado);  -- resumen y filtros por esta
 
 -- ===========================================================================
 -- detalle_venta: una linea de producto de la venta. Requiere al menos un detalle
--- (RN-001), el que esta tabulando es entrega de Inventario/negocio y Ventas al crear.
+-- (RN-001). Quien registra la venta elige la variante desde Inventario.
 -- variante_id es una REFERENCIA SUAVE a inventario.variantes(id): la tabla variantes
 -- pertenece al esquema de Inventario (docs/inventario/schema.sql) y no vive en este
 -- script (se ejecuta en cualquier orden). Al consolidar los esquemas (p.ej. EF Core)

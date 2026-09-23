@@ -2,7 +2,7 @@
 
 **Issue:** #8 — Diseñar esquema de base de datos de Ventas y Facturación
 **Responsable:** Andres Felipe Vargas Serrato
-**Estado:** Implementado (rama `feature/modulo-ventas`). EF Core está configurado para PostgreSQL/Supabase; la creación de tablas se realiza mediante el script SQL manual (`docs/ventas/schema.sql`) y la conexión debe configurarse mediante User Secrets.
+**Estado:** Propuesta — NO implementado. Se define el contrato antes de escribir la implementación (ver `docs/DECISIONES.md`, sección 6: *"Contratos antes que implementación"*).
 
 ---
 
@@ -17,7 +17,7 @@ El esquema tiene 4 tablas:
 | `facturas` | Factura fiscal generada automáticamente al confirmar la venta (RN-004), con relación 1:1 a la venta. |
 | `contador_factura` | Contador atómico (singleton) para generación segura de números de factura secuenciales bajo concurrencia. |
 
-Es un script SQL de creación manual (`docs/ventas/schema.sql`). EF Core está configurado para PostgreSQL/Supabase; las tablas se crean ejecutando este script manualmente y la conexión se configura mediante User Secrets (ver `backend/ErpModa.Api/USER_SECRETS_CONFIG.md`).
+Es un script SQL interino de creación manual (`docs/ventas/schema.sql`), no conectado automáticamente a Docker Compose — igual que el de Inventario (`docs/inventario/schema.sql`). Servirá de referencia cuando el equipo adopte EF Core (marcado "Pendiente Sprint 1" en `docs/guias/docker-compose.md`).
 
 ---
 
@@ -161,7 +161,7 @@ Los índices únicos de `facturas` (`venta_id`, `numero`) los crea Postgres auto
 
 ## 5. Flujo de integración con Inventario
 
-Esta sección documenta el flujo de datos entre Ventas e Inventario definido en el contrato `docs/contratos/ventas-inventario.md`. **Implementado** en `VentasService.ConfirmarAsync` y `AnularAsync` usando el `ErpModaDbContext` compartido con transacciones atómicas (`IsolationLevel.Serializable` en PostgreSQL).
+Esta sección documenta el flujo de datos entre Ventas e Inventario definido en el contrato `docs/contratos/ventas-inventario.md`. **Propuesta — NO implementado**, solo documentado.
 
 ### 5.1 Confirmación de venta
 
@@ -270,7 +270,3 @@ No se aplica automáticamente al levantar `docker compose up` — no hay volumen
 
 - Cuando exista el módulo de clientes: endurecer `facturas.cliente_id` como FK y decidir si `ventas.cliente_id` es necesario (hoy no hay justificación).
 - Cuando exista el módulo de empleados: el filtro de historial por *vendedor* (HU-003) requerirá una columna `vendedor_id` en `ventas`.
-
-## 11. Implementación EF Core (Completada)
-
-El modelo C# incluye `subtotal` e `impuesto` en `Venta`, coherente con el schema SQL y HU-001. La implementación EF Core está completa en `backend/ErpModa.Api/Data/ErpModaDbContext.cs` con mapeo exacto a las tablas SQL. La integración con PostgreSQL/Supabase está configurada; la conexión debe establecerse mediante User Secrets (ver `backend/ErpModa.Api/USER_SECRETS_CONFIG.md`). No se usa `Database.Migrate()` al iniciar la aplicación.

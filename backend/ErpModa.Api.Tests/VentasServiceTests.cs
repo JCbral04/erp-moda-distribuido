@@ -631,8 +631,47 @@ public class VentasServiceTests : IDisposable
         // Estado inicial es "emitida"
         Assert.Equal("emitida", factura.Estado);
 
+
         // Número es único en la tabla
         var duplicadas = await _context.Facturas.CountAsync(f => f.Numero == factura.Numero);
         Assert.Equal(1, duplicadas);
+    }
+
+    // =============================================================
+    // REGRESIÓN: configuración EF Core — sin FK sombra VarianteId1
+    // =============================================================
+
+    /// <summary>
+    /// Verifica que la relación Variante → MovimientoStock esté configurada
+    /// con exactamente una FK ("variante_id") y que EF Core NO haya creado
+    /// una propiedad sombra "VarianteId1" producto de una doble definición de
+    /// relación (bug detectado en PR #38).
+    ///
+    /// NOTA: InMemory no valida el DDL real de PostgreSQL. Este test comprueba
+    /// el modelo EF Core (metadata) pero NO garantiza que la migración sea
+    /// correcta contra PostgreSQL. Para esa garantía se requiere ejecutar
+    /// contra la base real (ver issue #37).
+    /// </summary>
+    [Fact]
+    public void ModeloEfCore_MovimientoStock_NoTienePropiedadSombraVarianteId1()
+    {
+        var entityType = _context.Model.FindEntityType(typeof(Inventario.Models.MovimientoStock));
+        Assert.NotNull(entityType);
+
+        // No debe existir una propiedad sombra llamada "VarianteId1".
+        var propiedadSombra = entityType!.FindProperty("VarianteId1");
+        Assert.Null(propiedadSombra);
+
+        // Debe existir exactamente una FK cuya columna sea "variante_id" / "VarianteId".
+        var fksHaciaVariante = entityType.GetForeignKeys()
+            .Where(fk => fk.PrincipalEntityType.ClrType == typeof(Inventario.Models.Variante))
+            .ToList();
+        Assert.Single(fksHaciaVariante);
+
+        // La FK debe apuntar a la propiedad de navegación Variante (no a una sombra).
+        var fk = fksHaciaVariante[0];
+        Assert.Equal("VarianteId", fk.Properties[0].Name);
+        Assert.NotNull(fk.DependentToPrincipal);   // la navegación Variante existe
+        Assert.Equal("Variante", fk.DependentToPrincipal!.Name);
     }
 }

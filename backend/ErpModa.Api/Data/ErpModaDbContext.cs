@@ -34,9 +34,12 @@ namespace ErpModa.Api.Data
                 .OnDelete(DeleteBehavior.Restrict);
 
             // Inventario - Variante 1:N MovimientosStock
+            // WithOne(m => m.Variante) referencia explícitamente la propiedad de navegación
+            // declarada en MovimientoStock, evitando que EF Core cree una segunda relación
+            // con columna sombra "VarianteId1".
             modelBuilder.Entity<Variante>()
                 .HasMany(v => v.MovimientosStock)
-                .WithOne()
+                .WithOne(m => m.Variante)
                 .HasForeignKey(m => m.VarianteId)
                 .OnDelete(DeleteBehavior.Restrict);
 

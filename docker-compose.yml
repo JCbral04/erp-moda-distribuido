@@ -4,9 +4,9 @@ services:
     container_name: erp-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: erpuser
-      POSTGRES_PASSWORD: erppass
-      POSTGRES_DB: erp_moda
+      POSTGRES_USER: ${POSTGRES_USER:-erpuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-erp_moda}
     ports:
       - "5432:5432"
     volumes:
@@ -14,7 +14,7 @@ services:
     networks:
       - erp-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U erpuser -d erp_moda"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-erpuser} -d ${POSTGRES_DB:-erp_moda}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__Default: Host=db;Port=5432;Database=erp_moda;Username=erpuser;Password=erppass
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=${POSTGRES_DB:-erp_moda};Username=${POSTGRES_USER:-erpuser};Password=${POSTGRES_PASSWORD}"
       Redis__ConnectionString: redis:6379
       IaService__BaseUrl: http://ia:8000
     ports:

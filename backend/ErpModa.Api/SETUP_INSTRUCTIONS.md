@@ -50,16 +50,18 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=aws-0-sa-eas
 > **Sustituye `<DB_PASSWORD>` directamente en la línea del terminal.**
 > No lo copies a ningún archivo.
 
-### Verificar que la clave existe (sin revelar el valor)
+### Verificar que la clave está configurada (sin revelar el valor)
 
-`dotnet user-secrets list` imprime los **valores completos** (incluida la connection string con la contraseña). Para confirmar **solo la existencia** de la clave sin mostrar nada:
+> [!WARNING]
+> **No uses `dotnet user-secrets list`**: ese comando imprime las cadenas de conexión completas incluyendo contraseñas en texto plano, con riesgo de quedar expuestas en logs, terminal o capturas.
 
-```powershell
-dotnet user-secrets list 2>$null | Select-String -Quiet "ConnectionStrings:DefaultConnection"
-```
-
-La salida es únicamente `True`/`False`. **No ejecutes `dotnet user-secrets list` sin `-Quiet`**
-en entornos donde la salida pueda quedar en capturas, historial del terminal o logs de CI.
+Para verificar que la clave está registrada sin exponer el valor:
+- **Recomendado:** Ejecuta `.\setup-user-secrets.ps1`, el cual verifica internamente `secrets.json` y solo reporta si la clave está registrada o ausente.
+- **Vía PowerShell:** Comprueba la existencia del archivo de secretos de forma no intrusiva:
+  ```powershell
+  $id = (Select-String -Path ErpModa.Api.csproj -Pattern '<UserSecretsId>(.*?)</UserSecretsId>').Matches.Groups[1].Value
+  Test-Path "$env:APPDATA\Microsoft\UserSecrets\$id\secrets.json"
+  ```
 
 ---
 
@@ -153,7 +155,7 @@ GET http://localhost:5000/health
 ## Solución de problemas
 
 ### Error: `Failed to connect to database`
-- Verifica que User Secrets esté configurado (`dotnet user-secrets list 2>$null | Select-String -Quiet "ConnectionStrings:DefaultConnection"` → debe imprimir `True`)
+- Verifica que User Secrets esté configurado ejecutando `.\setup-user-secrets.ps1` o comprobando que `secrets.json` existe (no uses `dotnet user-secrets list` para no exponer la contraseña)
 - Verifica que las credenciales de Supabase sean correctas
 
 ### Error: `relation does not exist`

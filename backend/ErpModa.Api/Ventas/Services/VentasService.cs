@@ -108,6 +108,19 @@ namespace ErpModa.Api.Ventas.Services
             if (total <= 0)
                 throw new ArgumentException("El total de la venta debe ser mayor a 0.");
 
+            // Verifica que todas las variantes existan antes de persistir la venta.
+            // Si alguna variante no existe, lanza ArgumentException identificando el ID
+            // ausente y no se guarda ningún registro.
+            var varianteIds = detalleEntidades.Select(d => d.VarianteId).Distinct().ToList();
+            var variantesExistentes = await _context.Variantes
+                .Where(v => varianteIds.Contains(v.Id))
+                .Select(v => v.Id)
+                .ToListAsync();
+
+            var varianteInexistente = varianteIds.FirstOrDefault(id => !variantesExistentes.Contains(id));
+            if (varianteInexistente != 0)
+                throw new ArgumentException($"La variante con Id {varianteInexistente} no existe.");
+
             var venta = new Venta
             {
                 Fecha = DateTime.UtcNow,
@@ -129,13 +142,17 @@ namespace ErpModa.Api.Ventas.Services
 
         public async Task<VentaResponseDto> ConfirmarAsync(int id)
         {
-            var venta = await GetVentaOrThrowAsync(id);
-
-            // Todo el flujo (validar/descontar stock + estado + factura) es atómico:
-            // o se confirma la venta y se registran todos los descuentos, o no se
-            // cambia nada (docs/contratos/ventas-inventario.md, sección 6, opción b).
+            // La carga de la venta y la validación de estado se ejecutan DENTRO de la
+            // transacción para que la decisión se tome en el mismo ámbito transaccional
+            // que el descuento de stock y la factura. Esto evita el TOCTOU donde la
+            // venta podría ser confirmada dos veces por hilos concurrentes que leyeran
+            // el estado "Pendiente" antes de que cualquiera de ellos empezara la
+            // transacción (docs/contratos/ventas-inventario.md, sección 6, opción b).
+            Venta? venta = null;
             await EjecutarAtomicoAsync(async () =>
             {
+                venta = await GetVentaOrThrowAsync(id);
+
                 if (venta.Estado != EstadoVenta.Pendiente)
                     throw new InvalidOperationException(
                         $"La venta con id {venta.Id} está en estado {venta.Estado}; solo se puede confirmar una venta pendiente.");
@@ -164,7 +181,7 @@ namespace ErpModa.Api.Ventas.Services
                 await _context.SaveChangesAsync();
             });
 
-            return MapToResponse(venta);
+            return MapToResponse(venta!);
         }
 
         public async Task<VentaResponseDto> AnularAsync(int id, AnularVentaDto anularDto)
@@ -315,12 +332,18 @@ namespace ErpModa.Api.Ventas.Services
 
         private async Task<string> GenerarNumeroFacturaAsync()
         {
-            // Incremento atómico del contador (UPSERT + RETURNING).
-            // Una sola fila (id=1) garantiza unicidad y orden bajo concurrencia.
+            // NOTA DE IMPLEMENTACIÓN: el incremento del contador usa un patrón
+            // leer-incrementar-guardar (read-modify-write), NO un UPSERT atómico.
+            // Esto es seguro cuando se ejecuta dentro de EjecutarAtomicoAsync con
+            // IsolationLevel.Serializable (PostgreSQL), que serializa las escrituras
+            // concurrentes. Con el proveedor InMemory de los tests no hay transacciones
+            // relacionales y la unicidad depende de que los tests no sean concurrentes.
+            // LIMITACIÓN: sin transacción Serializable (p.ej. fuera de ConfirmarAsync)
+            // hay riesgo de colisión bajo concurrencia alta. No hay reintentos automáticos.
             var contador = await _context.ContadoresFactura.FindAsync(1);
             if (contador == null)
             {
-                contador = new ContadorFactura { Id = 1, Valor = 0, Prefijo = "FAC-", Formato = "D6", ActualizadoEn = DateTime.UtcNow };
+                contador = new ContadorFactura { Id = 1, Valor = 0, Prefijo = "FAC-", ActualizadoEn = DateTime.UtcNow };
                 _context.ContadoresFactura.Add(contador);
             }
 
@@ -328,7 +351,9 @@ namespace ErpModa.Api.Ventas.Services
             contador.ActualizadoEn = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            return $"{contador.Prefijo}{contador.Valor.ToString(contador.Formato)}";
+            // Se usa el formato constante "D6" para garantizar exactamente 6 dígitos.
+            // No se confía en el campo Formato de la BD para evitar conversiones inseguras.
+            return $"{contador.Prefijo}{contador.Valor:D6}";
         }
 
         private static (DateTime inicioUtc, DateTime finUtc) ConstruirRangoDiaUtc(DateTime fecha)

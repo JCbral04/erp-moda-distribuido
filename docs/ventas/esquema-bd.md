@@ -2,7 +2,7 @@
 
 **Issue:** #8 — Diseñar esquema de base de datos de Ventas y Facturación
 **Responsable:** Andres Felipe Vargas Serrato
-**Estado:** Propuesta — NO implementado. Se define el contrato antes de escribir la implementación (ver `docs/DECISIONES.md`, sección 6: *"Contratos antes que implementación"*).
+**Estado:** Esquema DDL diseñado (`docs/ventas/schema.sql`) y entidades mapeadas en EF Core (`ErpModaDbContext`). Tablas aprovisionadas manualmente en PostgreSQL/Supabase (sin migraciones automáticas).
 
 ---
 
@@ -15,9 +15,9 @@ El esquema tiene 4 tablas:
 | `ventas` | Cabecera de la venta: fecha, subtotal, impuesto, total, método de pago, estado y motivo de anulación. |
 | `detalle_venta` | Líneas de producto de la venta: variante, cantidad, precio unitario y subtotal. Un mínimo de una por venta (RN-001). |
 | `facturas` | Factura fiscal generada automáticamente al confirmar la venta (RN-004), con relación 1:1 a la venta. |
-| `contador_factura` | Contador atómico (singleton) para generación segura de números de factura secuenciales bajo concurrencia. |
+| `contador_factura` | Contador secuencial para generación de números de factura. |
 
-Es un script SQL interino de creación manual (`docs/ventas/schema.sql`), no conectado automáticamente a Docker Compose — igual que el de Inventario (`docs/inventario/schema.sql`). Servirá de referencia cuando el equipo adopte EF Core (marcado "Pendiente Sprint 1" en `docs/guias/docker-compose.md`).
+Las entidades correspondientes están mapeadas en EF Core (`ErpModaDbContext`) para PostgreSQL, y las pruebas automáticas se ejecutan contra el proveedor InMemory. El script SQL (`docs/ventas/schema.sql`) provee la definición DDL de referencia para PostgreSQL.
 
 ---
 
@@ -161,72 +161,71 @@ Los índices únicos de `facturas` (`venta_id`, `numero`) los crea Postgres auto
 
 ## 5. Flujo de integración con Inventario
 
-Esta sección documenta el flujo de datos entre Ventas e Inventario definido en el contrato `docs/contratos/ventas-inventario.md`. **Propuesta — NO implementado**, solo documentado.
+Esta sección documenta el flujo implementado en `VentasService` (EF Core, `ErpModaDbContext`) entre Ventas e Inventario, según el contrato `docs/contratos/ventas-inventario.md`.
+
+> [!NOTE]
+> La integración está implementada en la capa de aplicación con EF Core (`VentasService.ConfirmarAsync` y `AnularAsync`). Los tests de regresión usan EF Core InMemory.
+> **Limitaciones conocidas:** (1) las FKs entre `detalle_venta.variante_id` y `movimientos_stock.referencia_id` son referencias suaves (sin FK dura en la BD), (2) la transacción `Serializable` solo se activa con proveedor relacional PostgreSQL — InMemory no tiene transacciones reales, (3) la integración no ha sido validada contra una instancia PostgreSQL real (pendiente issue #37).
 
 ### 5.1 Confirmación de venta
 
-Cuando una venta se confirma (`ventas.estado = 'Confirmada'`), el módulo Ventas invoca al módulo Inventario para validar y descontar stock:
+Cuando una venta se confirma (`ventas.estado = 'Confirmada'`), `VentasService.ConfirmarAsync` ejecuta dentro de una transacción `Serializable` (PostgreSQL) o directamente (InMemory):
+
+1. Carga la venta con estado vigente **dentro** de la transacción (evita TOCTOU).
+2. Valida que el estado sea `Pendiente`; si no, lanza `InvalidOperationException`.
+3. Valida stock de **todas** las variantes antes de descontar ninguna (sin descuentos parciales).
+4. Descuenta stock (`variante.Stock -= cantidad`) y registra en `movimientos_stock`.
+5. Cambia el estado a `Confirmada` y genera la factura.
 
 ```
-Venta confirmada (ventas.estado = 'Confirmada')
-→ Inventario valida stock disponible por variante
-→ Inventario descuenta stock de variantes (salida)
-→ Inventario registra movimiento en movimientos_stock
-→ movimientos_stock.tipo = 'venta'
-→ movimientos_stock.cantidad = negativo (salida)
-→ movimientos_stock.referencia_tipo = 'venta'
-→ movimientos_stock.referencia_id = ventas.id
+VentasService.ConfirmarAsync (transacción Serializable en PostgreSQL)
+→ Valida estado = Pendiente (dentro de la transacción)
+→ Valida stock disponible por variante (todas las líneas)
+→ Descuenta variante.Stock y registra MovimientoStock (tipo='venta', cantidad<0)
+→ Cambia venta.Estado = Confirmada
+→ Crea Factura (estado='emitida', número secuencial FAC-NNNNNN)
+→ SaveChanges (commit)
 ```
 
 **Ejemplo de movimiento generado:**
 ```sql
 INSERT INTO movimientos_stock (
-    variante_id,
-    tipo,
-    cantidad,
-    referencia_tipo,
-    referencia_id,
-    usuario,
-    creado_en
+    variante_id, tipo, cantidad, referencia_tipo, referencia_id, usuario, creado_en
 ) VALUES
-(10, 'venta', -2, 'venta', 1, 'vendedor_1', now());
+(10, 'venta', -2, 'venta', 1, 'sistema', now());
 ```
 
 ### 5.2 Anulación de venta
 
-Cuando una venta se anula (`ventas.estado = 'Anulada'`), el módulo Ventas invoca al módulo Inventario para restaurar el stock:
+Cuando una venta se anula (`ventas.estado = 'Anulada'`), `VentasService.AnularAsync` ejecuta:
+
+1. Solo restaura stock si la venta estaba `Confirmada` (si estaba `Pendiente`, nunca se descontó).
+2. Registra movimiento de entrada (`tipo='anulacion_venta'`, `cantidad>0`).
+3. Cambia la factura asociada a `estado='anulada'` si existe.
 
 ```
-Venta anulada (ventas.estado = 'Anulada', motivo_anulacion proporcionado)
-→ Inventario restaura stock de variantes (entrada)
-→ Inventario registra movimiento en movimientos_stock
-→ movimientos_stock.tipo = 'anulacion_venta'
-→ movimientos_stock.cantidad = positivo (entrada)
-→ movimientos_stock.referencia_tipo = 'venta'
-→ movimientos_stock.referencia_id = ventas.id
-→ movimientos_stock.motivo = ventas.motivo_anulacion
+VentasService.AnularAsync (transacción Serializable en PostgreSQL)
+→ Si venta.Estado = Confirmada: restaura variante.Stock y registra MovimientoStock
+    (tipo='anulacion_venta', cantidad>0, motivo=motivo_anulacion)
+→ Cambia venta.Estado = Anulada, guarda motivo_anulacion
+→ Marca factura.Estado = 'anulada' si existe
+→ SaveChanges (commit)
 ```
 
 **Ejemplo de movimiento generado:**
 ```sql
 INSERT INTO movimientos_stock (
-    variante_id,
-    tipo,
-    cantidad,
-    referencia_tipo,
-    referencia_id,
-    motivo,
-    usuario,
-    creado_en
+    variante_id, tipo, cantidad, referencia_tipo, referencia_id, motivo, usuario, creado_en
 ) VALUES
-(10, 'anulacion_venta', 2, 'venta', 1, 'Error en registro', 'admin_1', now());
+(10, 'anulacion_venta', 2, 'venta', 1, 'Error en registro', 'sistema', now());
 ```
 
-### 5.3 Referencias cruzadas
+### 5.3 Referencias cruzadas y limitaciones
 
-- `movimientos_stock.referencia_id` es una referencia suave a `ventas.id` (sin FK dura)
-- `detalle_venta.variante_id` es una referencia suave a `inventario.variantes.id` (sin FK dura)
-- Estas referencias se endurecerán como FKs cuando se adopte EF Core y se consoliden los esquemas
+- `movimientos_stock.referencia_id` es una referencia suave a `ventas.id` (sin FK dura en el DDL actual).
+- `detalle_venta.variante_id` es una referencia suave a `inventario.variantes.id` (sin FK dura).
+- La existencia de la variante se valida en `VentasService.CreateAsync` (antes de guardar) y en `AplicarDescuentoStockAsync` (al confirmar), pero no hay constraint en la BD.
+- Para endurecer estas referencias como FKs, se requiere consolidar los esquemas de Inventario y Ventas en una sola migración coordinada con el issue #37.
 
 ---
 

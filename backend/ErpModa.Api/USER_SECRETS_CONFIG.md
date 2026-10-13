@@ -22,17 +22,18 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=aws-0-sa-eas
 > - Sustituye `<DB_PASSWORD>` por tu contraseña real **en la línea del terminal**, no en este archivo.
 > - El valor nunca debe aparecer en el repositorio.
 
-### Verificar que la clave existe (sin mostrar el valor)
+### Verificar que la clave está configurada (sin revelar el valor)
 
-`dotnet user-secrets list` imprime los **valores completos** (incluida la connection string con la contraseña envuelta en `Password=`). Para confirmar **solo que la clave existe** sin revelar nada, usa:
+> [!WARNING]
+> **No ejecutes `dotnet user-secrets list`**: ese comando imprime en consola los valores completos en texto plano (incluyendo la contraseña de la base de datos dentro de `Password=`), lo que expone credenciales en el historial del terminal, logs o capturas de pantalla.
 
-```powershell
-dotnet user-secrets list 2>$null | Select-String -Quiet "ConnectionStrings:DefaultConnection"
-```
-
-La salida es únicamente `True` (configurada) o `False` (no configurada). Nunca muestra el valor.
-
-> **No ejecutes `dotnet user-secrets list` a secas ni con `Select-String` sin `-Quiet`:** su salida completa puede quedar registrada en logs, historial del terminal o capturas de pantalla.
+Para confirmar que la clave está registrada sin exponer el valor:
+- Usa el script interactivo `.\setup-user-secrets.ps1` (ver sección siguiente), que comprueba `secrets.json` directamente y solo indica si la clave existe.
+- O comprueba la existencia de la configuración en PowerShell:
+  ```powershell
+  $id = (Select-String -Path ErpModa.Api.csproj -Pattern '<UserSecretsId>(.*?)</UserSecretsId>').Matches.Groups[1].Value
+  Test-Path "$env:APPDATA\Microsoft\UserSecrets\$id\secrets.json"
+  ```
 
 ## Método recomendado: script PowerShell
 

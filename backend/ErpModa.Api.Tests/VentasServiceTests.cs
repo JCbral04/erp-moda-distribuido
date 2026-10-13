@@ -153,6 +153,25 @@ public class VentasServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CrearVenta_ConVarianteInexistente_LanzaArgumentException()
+    {
+        var service = _service;
+        const int varianteInexistente = 99999;
+        var dto = new CrearVentaDto
+        {
+            MetodoPago = "Efectivo",
+            Detalles = new List<DetalleCrearDto>
+            {
+                new() { VarianteId = varianteInexistente, Cantidad = 1, PrecioUnitario = 10000m }
+            }
+        };
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto));
+        // El mensaje debe identificar el ID de la variante inexistente.
+        Assert.Contains(varianteInexistente.ToString(), ex.Message);
+    }
+
+    [Fact]
     public async Task ConfirmarVenta_EnPendiente_CambiaAConfirmada()
     {
         var service = _service;
@@ -231,13 +250,16 @@ public class VentasServiceTests : IDisposable
     public async Task CrearVenta_ConVariosDetalles_CalculaSubtotalesYTotal()
     {
         var service = _service;
+        // Crear dos variantes reales para que la validación de existencia no rechace la venta.
+        var v1 = await CrearVarianteConStockAsync(10);
+        var v2 = await CrearVarianteConStockAsync(10);
         var dto = new CrearVentaDto
         {
             MetodoPago = "Tarjeta",
             Detalles = new List<DetalleCrearDto>
             {
-                new() { VarianteId = 1, Cantidad = 2, PrecioUnitario = 25000m },
-                new() { VarianteId = 2, Cantidad = 3, PrecioUnitario = 10000m }
+                new() { VarianteId = v1, Cantidad = 2, PrecioUnitario = 25000m },
+                new() { VarianteId = v2, Cantidad = 3, PrecioUnitario = 10000m }
             }
         };
 
@@ -460,14 +482,18 @@ public class VentasServiceTests : IDisposable
     [Fact]
     public async Task ConfirmarVenta_ConVarianteInexistente_FallaDeFormaControlada()
     {
+        // Con la validación de variantes en CreateAsync, no es posible crear una venta
+        // que referencie una variante inexistente. El rechazo ocurre antes de persistir.
+        // Esta prueba verifica que CreateAsync lanza ArgumentException y que la BD queda
+        // vacía (sin ventas, movimientos ni facturas).
         var service = _service;
-        var created = await service.CreateAsync(VentaValida(99999, 1, 25000m));
+        const int varianteInexistente = 99999;
 
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.ConfirmarAsync(created.Id));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.CreateAsync(VentaValida(varianteInexistente, 1, 25000m)));
 
-        var obtenida = await service.GetByIdAsync(created.Id);
-        Assert.NotNull(obtenida);
-        Assert.Equal("Pendiente", obtenida.Estado);
+        // La venta nunca se guardó, así que no hay nada que confirmar.
+        Assert.Empty(await _context.Ventas.ToListAsync());
         Assert.Empty(await _context.MovimientosStock.ToListAsync());
         Assert.Empty(await _context.Facturas.ToListAsync());
     }

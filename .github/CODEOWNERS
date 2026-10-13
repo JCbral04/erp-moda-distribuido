@@ -1,0 +1,36 @@
+# CODEOWNERS erp-moda-distribuido
+# Division por modulos segun asignacion del equipo de desarrollo.
+# La infrastructura(IaC) la maneja exclusivamente el lider del proyecto.
+# Regla de oro: Nadie toca el modulo de otro; un PR que cruce modulos.
+# Exige aprobacion del dueño de cada modulo tocado.
+# El ultimo patron que coincida tiene prioridad sobre los anteriores.
+
+#Respaldo: todo lo no listado explicitamente(incluida IaC) es responsabilidad del lider del proyecto.
+* @JCbral04
+
+#--Juan (@JCbral04) es el lider del proyecto y responsable de la infraestructura(IaC) y de la integracion de modulos.
+# Issues #1, #2, #3, #4, #20, #37 · PRs #12-#18, #21
+/docker-compose* @JCbral04
+/docker-compose*/ @JCbral04
+/.github/ @JCbral04
+*.sln @JCbral04
+*.csproj @JCbral04
+**/Dockerfile @JCbral04
+/backend/ErpModa.Api/Program.cs @JCbral04
+/backend/ErpModa.Api/appsettings*.json @JCbral04
+/backend/ErpModa.Api/Properties/ @JCbral04
+
+# ── Jair (@Cocogzz1) — módulo Inventario + microservicio IA ──
+# Issues #5, #6, #7 · PRs #30, #31, #32, #33, #36
+/backend/ErpModa.Api/Inventario/ @Cocogzz1
+/ai/ @Cocogzz1
+
+# ── Vargas (@Felipe937) — módulos Ventas/Facturación y Proveedores ──
+# Issues #8, #9, #10 · PRs #19, #35, #38
+/backend/ErpModa.Api/Ventas/ @Felipe937
+/backend/ErpModa.Api/Proveedores/ @Felipe937
+
+# Documentación y README: responsabilidad compartida de los tres
+# (issue #4: los 3 integrantes revisan y aprueban)
+/docs/ @JCbral04 @Cocogzz1 @Felipe937
+/README.md @JCbral04 @Cocogzz1 @Felipe937

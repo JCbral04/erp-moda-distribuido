@@ -1,6 +1,6 @@
 # Guía: Consolidación del módulo de Ventas
 
-**Issue relacionado:** #<issue> · **Responsable:** Andres Felipe Vargas Serrato (Ventas, Facturación, Proveedores) · **Fecha:** 15/09/2026
+**Issue relacionado:** #8 · **Responsable:** Andres Felipe Vargas Serrato (Ventas, Facturación, Proveedores) · **Fecha:** 15/09/2026
 
 ## ¿Qué se hizo?
 

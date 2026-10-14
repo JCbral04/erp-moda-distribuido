@@ -1,71 +1,83 @@
+using ErpModa.Api.Data;
 using ErpModa.Api.Inventario.DTOs;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace ErpModa.Api.Inventario.Services
 {
     public class ProductosService : IProductosService
     {
-        private readonly List<Producto> _productos = new();
-        private int _nextId = 1;
-        private int _nextVarianteId = 1;
+        private readonly ErpModaDbContext _context;
 
-        public Task<IEnumerable<ProductoResponseDto>> GetAllAsync()
+        public ProductosService(ErpModaDbContext context)
         {
-            var result = _productos.Select(MapToResponse);
-            return Task.FromResult(result);
+            _context = context ?? throw new ArgumentNullException(nameof(context));
         }
 
-        public Task<ProductoResponseDto?> GetByIdAsync(int id)
+        public async Task<IEnumerable<ProductoResponseDto>> GetAllAsync()
         {
-            var producto = _productos.FirstOrDefault(p => p.Id == id);
-            return Task.FromResult(producto != null ? MapToResponse(producto) : null);
+            var productos = await _context.Productos
+                .Include(p => p.Variantes)
+                .ToListAsync();
+
+            return productos.Select(MapToResponse);
         }
 
-        public Task<ProductoResponseDto> CreateAsync(CrearProductoDto crearDto)
+        public async Task<ProductoResponseDto?> GetByIdAsync(int id)
+        {
+            var producto = await _context.Productos
+                .Include(p => p.Variantes)
+                .FirstOrDefaultAsync(p => p.Id == id);
+
+            return producto != null ? MapToResponse(producto) : null;
+        }
+
+        public async Task<ProductoResponseDto> CreateAsync(CrearProductoDto crearDto)
         {
             if (string.IsNullOrWhiteSpace(crearDto.Nombre))
                 throw new ArgumentException("El nombre del producto es obligatorio.");
             if (crearDto.PrecioBase <= 0)
                 throw new ArgumentException("El precio base debe ser mayor a 0.");
 
-            var variantes = (crearDto.Variantes ?? new List<CrearVarianteDto>())
-                .Select(v => new Variante
-                {
-                    Id = _nextVarianteId++,
-                    Talla = v.Talla,
-                    Color = v.Color,
-                    Sku = v.Sku,
-                    Stock = v.Stock,
-                    Sobreprecio = v.Sobreprecio
-                })
-                .ToList();
-
             var producto = new Producto
             {
-                Id = _nextId++,
                 Nombre = crearDto.Nombre,
                 Descripcion = crearDto.Descripcion,
                 PrecioBase = crearDto.PrecioBase,
                 Categoria = crearDto.Categoria,
                 Activo = true,
-                Variantes = variantes
+                CreadoEn = DateTime.UtcNow,
+                ActualizadoEn = DateTime.UtcNow,
+                Variantes = (crearDto.Variantes ?? new List<CrearVarianteDto>())
+                    .Select(v => new Variante
+                    {
+                        Talla = v.Talla,
+                        Color = v.Color,
+                        Sku = v.Sku,
+                        Stock = v.Stock,
+                        Sobreprecio = v.Sobreprecio,
+                        StockMinimo = 5,
+                        CreadoEn = DateTime.UtcNow,
+                        ActualizadoEn = DateTime.UtcNow
+                    })
+                    .ToList()
             };
 
-            foreach (var variante in producto.Variantes)
-            {
-                variante.ProductoId = producto.Id;
-            }
+            _context.Productos.Add(producto);
+            await _context.SaveChangesAsync();
 
-            _productos.Add(producto);
-            return Task.FromResult(MapToResponse(producto));
+            return MapToResponse(producto);
         }
 
-        public Task<ProductoResponseDto?> UpdateAsync(int id, ActualizarProductoDto actualizarDto)
+        public async Task<ProductoResponseDto?> UpdateAsync(int id, ActualizarProductoDto actualizarDto)
         {
-            var producto = _productos.FirstOrDefault(p => p.Id == id);
+            var producto = await _context.Productos
+                .Include(p => p.Variantes)
+                .FirstOrDefaultAsync(p => p.Id == id);
+
             if (producto == null)
-                return Task.FromResult<ProductoResponseDto?>(null);
+                return null;
 
             if (string.IsNullOrWhiteSpace(actualizarDto.Nombre))
                 throw new ArgumentException("El nombre del producto es obligatorio.");
@@ -77,18 +89,23 @@ namespace ErpModa.Api.Inventario.Services
             producto.PrecioBase = actualizarDto.PrecioBase;
             producto.Categoria = actualizarDto.Categoria;
             producto.Activo = actualizarDto.Activo;
+            producto.ActualizadoEn = DateTime.UtcNow;
 
-            return Task.FromResult<ProductoResponseDto?>(MapToResponse(producto));
+            await _context.SaveChangesAsync();
+
+            return MapToResponse(producto);
         }
 
-        public Task<bool> DeleteAsync(int id)
+        public async Task<bool> DeleteAsync(int id)
         {
-            var producto = _productos.FirstOrDefault(p => p.Id == id);
+            var producto = await _context.Productos.FindAsync(id);
             if (producto == null)
-                return Task.FromResult(false);
+                return false;
 
-            _productos.Remove(producto);
-            return Task.FromResult(true);
+            _context.Productos.Remove(producto);
+            await _context.SaveChangesAsync();
+
+            return true;
         }
 
         private static ProductoResponseDto MapToResponse(Producto producto)

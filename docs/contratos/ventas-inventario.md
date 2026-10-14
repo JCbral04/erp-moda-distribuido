@@ -2,7 +2,7 @@
 
 **Propuesta:** Andres Felipe Vargas Serrato (Ventas)  
 **Destinatario:** Jair Enrique Polo Chamorro (Inventario)  
-**Estado:** Propuesta — NO implementado. Se define el contrato antes de escribir la integración (ver `docs/DECISIONES.md`, sección 6: *"Contratos antes que implementación"*).
+**Estado:** Parcialmente implementado (08/2026, rama `feature/modulo-ventas`). Ventas integra el descuento/restauración contra el esquema ya previsto (`movimientos_stock`, tipos `venta`/`anulacion_venta`) usando el `ErpModaDbContext` compartido y la **opción (b)** de atomicidad de la sección 6 (confirmar la venta como último paso, todo en una transacción). No se crea aún el endpoint HTTP del módulo de Inventario; esa parte queda pendiente de acuerdo con su dueño.
 
 ---
 
@@ -109,8 +109,8 @@ Con el mismo cuerpo (`varianteId`, `cantidad`) y las mismas respuestas de error 
 
 ## 6. Pendiente de acuerdo con el equipo
 
-- Nombre y forma final del endpoint (ruta, dos modos vs. un endpoint por operación).
-- **Atomicidad:** ¿cómo garantizan Ventas + Inventario que "confirmar venta" y "descontar stock" no queden a medias? Opciones: (a) Inventario ejecuta ambos pasos y Ventas trata el 404/409 como confirmación fallida; (b) confirmar la venta como último paso tras el descuento.
-- **Idempotencia / reintentos:** si el descuento llega pero la respuesta se pierde (timeout), ¿cómo se detecta que ya se aplicó para no descontar dos veces?
+- Nombre y forma final del endpoint (ruta, dos modos vs. un endpoint por operación). **Implementado en Ventas (opción b):** `VentasService.ConfirmarAsync`/`AnularAsync` validan/descuentan o restauran directamente contra `ErpModaDbContext` en una única transacción (`IsolationLevel.Serializable` en PostgreSQL; `IsRelational()` para que los tests InMemory no lo requieran). La venta se confirma como último paso, tras el descuento: si la variante no existe (`404`) o no hay stock (`409 stock_insuficiente`), no se modifica nada.
+- **Atomicidad:** verificada con la transacción compartida (opción b). Si Inventario expone el endpoint HTTP a futuro, la integración local puede migrarse sin cambiar el esquema.
+- **Idempotencia / reintentos:** el guard de estado (`Pendiente`→confirmar, `Confirmada`→anular) evita descontar/restaurar dos veces sobre la misma venta.
 - Granularidad: este contrato está a nivel de **variante**, como Inventario exige; el contrato de Proveedores aún tiene esa pregunta abierta (ver `docs/inventario/esquema-bd.md`, sección 5).
-- `stockResultante` en la respuesta: derivable en Inventario, se propone incluirlo por trazabilidad pero es opcional.
+- `stockResultante` en la respuesta: derivable en Inventario, se propone incluirlo por trazabilidad pero es opcional (los movimientos ya quedan en `movimientos_stock`).

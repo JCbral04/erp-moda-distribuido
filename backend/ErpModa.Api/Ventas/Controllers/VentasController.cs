@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using ErpModa.Api.Ventas.DTOs;
+using ErpModa.Api.Ventas.Exceptions;
 using ErpModa.Api.Ventas.Interfaces;
 
 namespace ErpModa.Api.Ventas.Controllers
@@ -75,6 +76,17 @@ namespace ErpModa.Api.Ventas.Controllers
             catch (KeyNotFoundException ex)
             {
                 return NotFound(ex.Message);
+            }
+            catch (StockInsuficienteException ex)
+            {
+                return Conflict(new
+                {
+                    codigo = "stock_insuficiente",
+                    varianteId = ex.VarianteId,
+                    disponible = ex.Disponible,
+                    solicitado = ex.Solicitado,
+                    mensaje = ex.Message
+                });
             }
             catch (InvalidOperationException ex)
             {

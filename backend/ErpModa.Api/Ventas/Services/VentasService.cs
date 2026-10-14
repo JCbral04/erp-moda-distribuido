@@ -186,20 +186,28 @@ namespace ErpModa.Api.Ventas.Services
 
         public async Task<VentaResponseDto> AnularAsync(int id, AnularVentaDto anularDto)
         {
-            var venta = await GetVentaOrThrowAsync(id);
-
-            if (venta.Estado == EstadoVenta.Anulada)
-                throw new InvalidOperationException(
-                    $"La venta con id {id} ya está anulada.");
-
+            // La validación del motivo no depende del estado en BD y se mantiene
+            // fuera de la transacción. La carga de la venta y la comprobación de
+            // "ya anulada" van DENTRO de la transacción, con el mismo patrón de
+            // ConfirmarAsync: dos anulaciones concurrentes no pueden restaurar el
+            // stock dos veces porque la segunda ve la venta ya Anulada y lanza.
             if (anularDto == null || string.IsNullOrWhiteSpace(anularDto.Motivo))
                 throw new ArgumentException("El motivo de anulación es obligatorio.");
 
             var motivo = anularDto.Motivo.Trim();
 
-            // Restauración atómica con el cambio de estado/factura.
+            // Carga + comprobación de estado + restauración + factura en la misma
+            // transacción. El comportamiento para ventas pendientes no cambia: nunca
+            // descontaron stock y por eso no restauran.
+            Venta? venta = null;
             await EjecutarAtomicoAsync(async () =>
             {
+                venta = await GetVentaOrThrowAsync(id);
+
+                if (venta.Estado == EstadoVenta.Anulada)
+                    throw new InvalidOperationException(
+                        $"La venta con id {id} ya está anulada.");
+
                 // Solo una venta Confirmada descontó stock; una venta Pendiente nunca
                 // lo descontó y por eso no restaura (movimiento tipo='anulacion_venta').
                 if (venta.Estado == EstadoVenta.Confirmada)
@@ -220,7 +228,7 @@ namespace ErpModa.Api.Ventas.Services
                 await _context.SaveChangesAsync();
             });
 
-            return MapToResponse(venta);
+            return MapToResponse(venta!);
         }
 
         private async Task<Venta> GetVentaOrThrowAsync(int id)

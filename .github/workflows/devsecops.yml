@@ -140,14 +140,14 @@ jobs:
           persist-credentials: false
 
       - name: Inicializar CodeQL
-        uses: github/codeql-action/init@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3.39.0
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: csharp, python
           queries: security-and-quality
           build-mode: none   # Modo sin compilación para C# y Python
 
       - name: Ejecutar análisis CodeQL
-        uses: github/codeql-action/analyze@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3.39.0
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
 
   # ----------------------------------------------------------------------------
   # 5. Compuerta Demostrativa de Despliegue (Simulada / Pendiente)

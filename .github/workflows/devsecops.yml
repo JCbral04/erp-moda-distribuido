@@ -1,0 +1,120 @@
+name: DevSecOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Mínimo privilegio: todo denegado por defecto; cada job declara lo suyo
+permissions: {}
+
+jobs:
+  # 1. Escaneo de secretos en todo el historial
+  secret-detection:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified
+
+  # 2. SCA — auditoría de dependencias NuGet (bloquea en severidad alta/crítica)
+  dependency-scan-dotnet:
+    name: SCA .NET (NuGet)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Instalar .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restaurar dependencias
+        run: dotnet restore backend/ErpModa.sln
+
+      - name: Audit — bloquea si hay vulnerabilidades High o Critical
+        run: |
+          dotnet list backend/ErpModa.sln package --vulnerable --include-transitive 2>&1 | tee audit.txt
+          if grep -Ei "Critical|High" audit.txt; then
+            echo "::error::Vulnerabilidades altas/críticas en dependencias NuGet"
+            exit 1
+          fi
+
+  # 3. SCA — auditoría de dependencias pip del microservicio de IA
+  dependency-scan-python:
+    name: SCA Python (pip)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Instalar Python 3.12
+        uses: setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Audit — bloquea si hay vulnerabilidades conocidas
+        run: |
+          pip install pip-audit
+          pip-audit -r ai/requirements.txt --strict
+
+  # 4. SAST con CodeQL (requiere desactivar el "default setup" en Settings)
+  sast-scan:
+    name: Static Application Security Testing (SAST)
+    runs-on: ubuntu-latest
+    needs: [secret-detection, dependency-scan-dotnet, dependency-scan-python]
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Inicializar CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp, python
+          queries: security-and-quality
+          build-mode: none   # C# sin compilación: evita flakiness de build en CI
+
+      - name: Ejecutar análisis CodeQL
+        uses: github/codeql-action/analyze@v3
+
+  # 5. Despliegue solo si todas las compuertas de seguridad pasan
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: sast-scan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+    environment: production
+    steps:
+      - name: Despliegue seguro (placeholder)
+        run: |
+          echo "Todos los controles de seguridad pasaron con éxito."
+          echo "Desplegando la aplicación en el entorno seguro..."

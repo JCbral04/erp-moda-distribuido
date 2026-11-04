@@ -1,4 +1,6 @@
 using ErpModa.Api.Inventario.Models;
+using ErpModa.Api.Proveedores.Models;
+using ErpModa.Api.Proveedores.OrdenesCompra.Models;
 using ErpModa.Api.Ventas.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -21,6 +23,11 @@ namespace ErpModa.Api.Data
         public DbSet<DetalleVenta> DetalleVenta { get; set; }
         public DbSet<Factura> Facturas { get; set; }
         public DbSet<ContadorFactura> ContadoresFactura { get; set; }
+
+        // Proveedores
+        public DbSet<Proveedor> Proveedores { get; set; }
+        public DbSet<OrdenCompra> OrdenesCompra { get; set; }
+        public DbSet<DetalleOrdenCompra> DetallesOrdenCompra { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -70,6 +77,61 @@ namespace ErpModa.Api.Data
             modelBuilder.Entity<DetalleVenta>().ToTable("detalle_venta");
             modelBuilder.Entity<Factura>().ToTable("facturas");
             modelBuilder.Entity<ContadorFactura>().ToTable("contador_factura");
+
+            // Proveedores - Proveedor
+            modelBuilder.Entity<Proveedor>(eb =>
+            {
+                eb.ToTable("proveedores");
+                eb.HasKey(p => p.Id);
+                eb.Property(p => p.Id).HasColumnName("id");
+                eb.Property(p => p.RazonSocial).HasColumnName("razon_social").IsRequired().HasMaxLength(150);
+                eb.Property(p => p.Nit).HasColumnName("nit").IsRequired().HasMaxLength(20);
+                eb.Property(p => p.Contacto).HasColumnName("contacto").HasMaxLength(60);
+                eb.Property(p => p.Email).HasColumnName("email").IsRequired().HasMaxLength(100);
+                eb.Property(p => p.Telefono).HasColumnName("telefono").HasMaxLength(20);
+                eb.Property(p => p.Direccion).HasColumnName("direccion").HasMaxLength(120);
+                eb.Property(p => p.FormaPago).HasColumnName("forma_pago").HasMaxLength(50);
+                eb.Property(p => p.TiempoEntrega).HasColumnName("tiempo_entrega");
+                eb.Property(p => p.Estado).HasColumnName("estado").IsRequired();
+            });
+
+            // Proveedores - Orden de Compra 1:N DetalleOrdenCompra
+            modelBuilder.Entity<OrdenCompra>(eb =>
+            {
+                eb.ToTable("ordenes_compra");
+                eb.HasKey(o => o.Id);
+                eb.Property(o => o.Id).HasColumnName("id");
+                eb.Property(o => o.ProveedorId).HasColumnName("proveedor_id").IsRequired();
+                eb.Property(o => o.Fecha).HasColumnName("fecha").IsRequired();
+                eb.Property(o => o.Subtotal).HasColumnName("subtotal").IsRequired().HasPrecision(12, 2);
+                eb.Property(o => o.Total).HasColumnName("total").IsRequired().HasPrecision(12, 2);
+                eb.Property(o => o.Estado).HasColumnName("estado").IsRequired().HasMaxLength(20);
+                eb.Property(o => o.Observaciones).HasColumnName("observaciones").HasMaxLength(500);
+                eb.Property(o => o.CreadoEn).HasColumnName("creado_en").IsRequired();
+                eb.Property(o => o.ActualizadoEn).HasColumnName("actualizado_en").IsRequired();
+
+                eb.HasOne<Proveedor>()
+                    .WithMany()
+                    .HasForeignKey(o => o.ProveedorId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                eb.HasMany(o => o.Detalles)
+                    .WithOne()
+                    .HasForeignKey(d => d.OrdenCompraId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<DetalleOrdenCompra>(eb =>
+            {
+                eb.ToTable("detalles_orden_compra");
+                eb.HasKey(d => d.Id);
+                eb.Property(d => d.Id).HasColumnName("id");
+                eb.Property(d => d.OrdenCompraId).HasColumnName("orden_compra_id").IsRequired();
+                eb.Property(d => d.ProductoId).HasColumnName("producto_id").IsRequired(); // referencia suave a Inventario
+                eb.Property(d => d.Cantidad).HasColumnName("cantidad").IsRequired();
+                eb.Property(d => d.PrecioUnitario).HasColumnName("precio_unitario").IsRequired().HasPrecision(12, 2);
+                eb.Property(d => d.Subtotal).HasColumnName("subtotal").IsRequired().HasPrecision(12, 2);
+            });
 
             // Configurar precisión decimal para campos monetarios
             modelBuilder.Entity<Producto>()

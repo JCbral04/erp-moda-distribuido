@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ErpModa.Api.Proveedores.OrdenesCompra.DTOs;
 using ErpModa.Api.Proveedores.OrdenesCompra.Interfaces;
@@ -6,6 +7,7 @@ namespace ErpModa.Api.Proveedores.OrdenesCompra.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize(Roles = "Administrador")]
     public class OrdenesCompraController : ControllerBase
     {
         private readonly IOrdenesCompraService _service;

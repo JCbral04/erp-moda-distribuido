@@ -1,4 +1,4 @@
-﻿name: DevSecOps CI/CD Pipeline
+name: DevSecOps CI/CD Pipeline
 
 # ==============================================================================
 # PIPELINE DEVSECOPS - ERP MODA DISTRIBUIDO
@@ -140,14 +140,14 @@ jobs:
           persist-credentials: false
 
       - name: Inicializar CodeQL
-        uses: github/codeql-action/init@ca3fa68ff03c08a910a220b9a7161cfe8019c1f3 # v4.39.1
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: csharp, python
           queries: security-and-quality
           build-mode: none   # Modo sin compilaciÃ³n para C# y Python
 
       - name: Ejecutar anÃ¡lisis CodeQL
-        uses: github/codeql-action/analyze@d5d708ffde26b6fe811669aa7f2b4bd4b49d4c61 # v4.39.1
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
   # ----------------------------------------------------------------------------
   # 5. Compuerta Demostrativa de Despliegue (Simulada / Pendiente)

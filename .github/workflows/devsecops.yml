@@ -1,19 +1,19 @@
-name: DevSecOps CI/CD Pipeline
+﻿name: DevSecOps CI/CD Pipeline
 
 # ==============================================================================
 # PIPELINE DEVSECOPS - ERP MODA DISTRIBUIDO
 # ==============================================================================
-# Controles de seguridad automatizados en compuertas de admisión (shift-left):
-#  1. Secret Scanning: Detección de credenciales en commits con TruffleHog.
-#  2. SCA .NET (NuGet): Auditoría de vulnerabilidades altas/críticas en paquetes.
-#  3. SCA Python (pip): Auditoría con pip-audit en dependencias de IA.
-#  4. SAST: Análisis estático de código con CodeQL (C# y Python).
-#  5. Deployment Gate: Compuerta demostrativa condicionada al éxito de seguridad.
+# Controles de seguridad automatizados en compuertas de admisiÃ³n (shift-left):
+#  1. Secret Scanning: DetecciÃ³n de credenciales en commits con TruffleHog.
+#  2. SCA .NET (NuGet): AuditorÃ­a de vulnerabilidades altas/crÃ­ticas en paquetes.
+#  3. SCA Python (pip): AuditorÃ­a con pip-audit en dependencias de IA.
+#  4. SAST: AnÃ¡lisis estÃ¡tico de cÃ³digo con CodeQL (C# y Python).
+#  5. Deployment Gate: Compuerta demostrativa condicionada al Ã©xito de seguridad.
 #
-# REQUISITO DE CONFIGURACIÓN MANUAL EN GITHUB (PROTECCIÓN DE MAIN):
+# REQUISITO DE CONFIGURACIÃ“N MANUAL EN GITHUB (PROTECCIÃ“N DE MAIN):
 #  Este workflow ejecuta las validaciones de seguridad en cada PR. Sin embargo,
 #  para que BLOQUEE efectivamente los merges a la rama protegida 'main', un
-#  administrador del repositorio DEBE configurar la regla de protección de rama
+#  administrador del repositorio DEBE configurar la regla de protecciÃ³n de rama
 #  o un Ruleset en GitHub:
 #    Settings > Branches > Branch protection rules (o Repository Rulesets)
 #    -> Activar "Require status checks to pass before merging"
@@ -30,25 +30,25 @@ on:
   pull_request:
     branches: [ "main" ]
 
-# Mínimo privilegio: todo denegado por defecto; cada job declara explícitamente sus permisos
+# MÃ­nimo privilegio: todo denegado por defecto; cada job declara explÃ­citamente sus permisos
 permissions: {}
 
 jobs:
   # ----------------------------------------------------------------------------
   # 1. Escaneo de secretos en los commits del PR / push
   # ----------------------------------------------------------------------------
-  # ALCANCE Y DECISIÓN DE TRUFFLEHOG:
-  #  Se evalúan los commits introducidos en el PR/push (diferencial base..head)
+  # ALCANCE Y DECISIÃ“N DE TRUFFLEHOG:
+  #  Se evalÃºan los commits introducidos en el PR/push (diferencial base..head)
   #  en lugar de todo el historial acumulado. Esto garantiza que las revisiones
-  #  de código sean ágiles, sin bloquear a colaboradores por credenciales
+  #  de cÃ³digo sean Ã¡giles, sin bloquear a colaboradores por credenciales
   #  antiguas o falsos positivos ajenos al cambio propuesto.
   #
-  # LIMITACIÓN DE --only-verified:
-  #  TruffleHog únicamente reporta secretos cuyo detector cuenta con verificación
+  # LIMITACIÃ“N DE --only-verified:
+  #  TruffleHog Ãºnicamente reporta secretos cuyo detector cuenta con verificaciÃ³n
   #  activa contra el proveedor (ej. API externa de AWS, GitHub, Slack) y cuya
-  #  clave responde como activa/válida. Esto elimina falsos positivos, pero NO
+  #  clave responde como activa/vÃ¡lida. Esto elimina falsos positivos, pero NO
   #  detecta credenciales de servicios sin detector online (como strings de
-  #  conexión de bases de datos internas o llaves privadas SSH/PGP no verificadas).
+  #  conexiÃ³n de bases de datos internas o llaves privadas SSH/PGP no verificadas).
   # ----------------------------------------------------------------------------
   secret-detection:
     name: Secret Scanning
@@ -56,7 +56,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout código
+      - name: Checkout cÃ³digo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -69,7 +69,7 @@ jobs:
           extra_args: --only-verified
 
   # ----------------------------------------------------------------------------
-  # 2. SCA — Auditoría de dependencias NuGet (.NET)
+  # 2. SCA â€” AuditorÃ­a de dependencias NuGet (.NET)
   # ----------------------------------------------------------------------------
   dependency-scan-dotnet:
     name: SCA .NET (NuGet)
@@ -77,7 +77,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout código
+      - name: Checkout cÃ³digo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -90,16 +90,16 @@ jobs:
       - name: Restaurar dependencias
         run: dotnet restore backend/ErpModa.sln
 
-      - name: Audit — bloquea si hay vulnerabilidades High o Critical (incluyendo transitivas)
+      - name: Audit â€” bloquea si hay vulnerabilidades High o Critical (incluyendo transitivas)
         run: |
           dotnet list backend/ErpModa.sln package --vulnerable --include-transitive 2>&1 | tee audit.txt
           if grep -Ei "Critical|High" audit.txt; then
-            echo "::error::Vulnerabilidades altas/críticas detectadas en dependencias NuGet"
+            echo "::error::Vulnerabilidades altas/crÃ­ticas detectadas en dependencias NuGet"
             exit 1
           fi
 
   # ----------------------------------------------------------------------------
-  # 3. SCA — Auditoría de dependencias pip (Microservicio IA)
+  # 3. SCA â€” AuditorÃ­a de dependencias pip (Microservicio IA)
   # ----------------------------------------------------------------------------
   dependency-scan-python:
     name: SCA Python (pip)
@@ -107,7 +107,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout código
+      - name: Checkout cÃ³digo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -117,7 +117,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Audit — bloquea si hay vulnerabilidades conocidas en dependencias pip
+      - name: Audit â€” bloquea si hay vulnerabilidades conocidas en dependencias pip
         run: |
           pip install pip-audit
           pip-audit -r ai/requirements.txt --strict
@@ -134,27 +134,27 @@ jobs:
       actions: read
       security-events: write
     steps:
-      - name: Checkout código
+      - name: Checkout cÃ³digo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Inicializar CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: csharp, python
           queries: security-and-quality
-          build-mode: none   # Modo sin compilación para C# y Python
+          build-mode: none   # Modo sin compilaciÃ³n para C# y Python
 
-      - name: Ejecutar análisis CodeQL
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+      - name: Ejecutar anÃ¡lisis CodeQL
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 
   # ----------------------------------------------------------------------------
   # 5. Compuerta Demostrativa de Despliegue (Simulada / Pendiente)
   # ----------------------------------------------------------------------------
   # NOTA DE SEGURIDAD:
   #  Este job es un placeholder demostrativo y educativo que modela la compuerta
-  #  final hacia producción. NO contiene acciones reales de despliegue ni maneja
+  #  final hacia producciÃ³n. NO contiene acciones reales de despliegue ni maneja
   #  credenciales/secretos de infraestructura.
   # ----------------------------------------------------------------------------
   deploy:
@@ -168,5 +168,5 @@ jobs:
     steps:
       - name: Compuerta demostrativa (sin despliegue real)
         run: |
-          echo "Todos los controles DevSecOps (Secret Scanning, SCA NuGet, SCA pip, SAST) pasaron con éxito."
-          echo "Compuerta de despliegue superada (demostración). El despliegue continuo real a producción está pendiente de implementar."
+          echo "Todos los controles DevSecOps (Secret Scanning, SCA NuGet, SCA pip, SAST) pasaron con Ã©xito."
+          echo "Compuerta de despliegue superada (demostraciÃ³n). El despliegue continuo real a producciÃ³n estÃ¡ pendiente de implementar."

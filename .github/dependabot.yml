@@ -1,4 +1,4 @@
-version: 2
+﻿version: 2
 updates:
   - package-ecosystem: "nuget"
     directory: "/backend"
@@ -23,3 +23,7 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     labels: ["technical task", "arquitectura"]
+    groups:
+      codeql-actions:
+        patterns:
+          - "github/codeql-action/*"

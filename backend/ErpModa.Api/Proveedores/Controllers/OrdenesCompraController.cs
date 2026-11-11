@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ErpModa.Api.Proveedores.DTOs;
 using ErpModa.Api.Proveedores.Interfaces;
@@ -9,6 +10,7 @@ namespace ErpModa.Api.Proveedores.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize(Roles = "Administrador")]
     public class OrdenesCompraController : ControllerBase
     {
         private readonly IOrdenesCompraService _service;
@@ -32,15 +34,26 @@ namespace ErpModa.Api.Proveedores.Controllers
             {
                 return BadRequest(ex.Message);
             }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al obtener las órdenes de compra.");
+            }
         }
 
         [HttpGet("{id}")]
         public async Task<ActionResult<OrdenCompraResponseDto>> GetById(int id)
         {
-            var result = await _service.GetByIdAsync(id);
-            if (result == null)
-                return NotFound();
-            return Ok(result);
+            try
+            {
+                var result = await _service.GetByIdAsync(id);
+                if (result == null)
+                    return NotFound();
+                return Ok(result);
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al obtener la orden de compra.");
+            }
         }
 
         [HttpPost]
@@ -59,7 +72,10 @@ namespace ErpModa.Api.Proveedores.Controllers
             {
                 return BadRequest(ex.Message);
             }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al crear la orden de compra.");
+            }
         }
     }
 }
-

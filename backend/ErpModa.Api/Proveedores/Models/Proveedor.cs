@@ -61,7 +61,14 @@ namespace ErpModa.Api.Proveedores.Models
         [Required]
         public DateTime ActualizadoEn { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Token de concurrencia optimista. Se actualiza en cada modificación
+        /// para detectar actualizaciones perdidas bajo edición simultánea.
+        /// </summary>
+        [Column("version")]
+        [Required]
+        public byte[] Version { get; set; } = Array.Empty<byte>();
+
         public List<OrdenCompra> OrdenesCompra { get; set; } = new();
     }
 }
-

@@ -1,13 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using ErpModa.Api.Data;
 using ErpModa.Api.Proveedores.DTOs;
 using ErpModa.Api.Proveedores.Interfaces;
 using ErpModa.Api.Proveedores.Models;
 using ErpModa.Api.Proveedores.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
 namespace ErpModa.Api.Tests
@@ -17,16 +20,33 @@ namespace ErpModa.Api.Tests
         private readonly string _dbName;
         private readonly ErpModaDbContext _context;
         private readonly IProveedoresService _service;
+        private readonly IAuditoriaLogService _auditoria;
+        private readonly List<AuditoriaLog> _auditoriaLogs = new();
 
         public ProveedoresServiceTests()
         {
             _dbName = Guid.NewGuid().ToString();
             var options = new DbContextOptionsBuilder<ErpModaDbContext>()
                 .UseInMemoryDatabase(_dbName)
+                .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
                 .Options;
 
             _context = new ErpModaDbContext(options);
-            _service = new ProveedoresService(_context);
+
+            var httpContextAccessor = new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "usuario-test"),
+                        new Claim(ClaimTypes.Role, "Administrador")
+                    }, "Test"))
+                }
+            };
+
+            _auditoria = new AuditoriaLogServiceFake(_auditoriaLogs);
+            _service = new ProveedoresService(_context, httpContextAccessor, _auditoria, new WorkflowServiceFake(_context, _auditoria));
         }
 
         public void Dispose()
@@ -72,6 +92,20 @@ namespace ErpModa.Api.Tests
             Assert.NotEqual(default, result.ActualizadoEn);
         }
 
+        [Fact]
+        public async Task CrearProveedor_RegistraAuditoria()
+        {
+            var dto = ProveedorValido();
+
+            var result = await _service.CreateAsync(dto);
+
+            Assert.Single(_auditoriaLogs);
+            Assert.Equal("Proveedor", _auditoriaLogs[0].Entidad);
+            Assert.Equal(result.Id, _auditoriaLogs[0].EntidadId);
+            Assert.Equal("Crear", _auditoriaLogs[0].Operacion);
+            Assert.Equal("usuario-test", _auditoriaLogs[0].UsuarioId);
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("   ")]
@@ -105,6 +139,20 @@ namespace ErpModa.Api.Tests
             var dto2 = ProveedorValido("900111222-3", "Proveedor B");
             var ex = await Assert.ThrowsAsync<ArgumentException>(() => _service.CreateAsync(dto2));
             Assert.Contains("900111222-3", ex.Message);
+        }
+
+        [Fact]
+        public async Task CrearProveedor_ConNitDuplicado_RegistraUnSoloProveedor()
+        {
+            var dto1 = ProveedorValido("900111222-3", "Proveedor A");
+            await _service.CreateAsync(dto1);
+
+            var dto2 = ProveedorValido("900111222-3", "Proveedor B");
+            await Assert.ThrowsAsync<ArgumentException>(() => _service.CreateAsync(dto2));
+
+            var todos = await _service.GetAllAsync();
+            Assert.Single(todos);
+            Assert.Equal("900111222-3", todos.First().Nit);
         }
 
         [Theory]
@@ -198,6 +246,24 @@ namespace ErpModa.Api.Tests
         }
 
         [Fact]
+        public async Task ActualizarProveedor_RegistraAuditoria()
+        {
+            var created = await _service.CreateAsync(ProveedorValido());
+            var updateDto = new ActualizarProveedorDto
+            {
+                Nombre = "Nombre Actualizado",
+                Nit = created.Nit,
+                Activo = false
+            };
+
+            await _service.UpdateAsync(created.Id, updateDto);
+
+            var logsCambioEstado = _auditoriaLogs.Where(l => l.Operacion == "CambiarEstado").ToList();
+            Assert.NotEmpty(logsCambioEstado);
+            Assert.Equal("usuario-test", logsCambioEstado.Last().UsuarioId);
+        }
+
+        [Fact]
         public async Task ActualizarProveedor_Inexistente_DevuelveNull()
         {
             var updateDto = new ActualizarProveedorDto
@@ -271,6 +337,19 @@ namespace ErpModa.Api.Tests
         }
 
         [Fact]
+        public async Task EliminarProveedor_RegistraAuditoria()
+        {
+            var p = await _service.CreateAsync(ProveedorValido());
+
+            await _service.DeleteAsync(p.Id);
+
+            var logEliminar = _auditoriaLogs.LastOrDefault(l => l.Operacion == "Eliminar");
+            Assert.NotNull(logEliminar);
+            Assert.Equal(p.Id, logEliminar.EntidadId);
+            Assert.Equal("usuario-test", logEliminar.UsuarioId);
+        }
+
+        [Fact]
         public async Task EliminarProveedor_Inexistente_DevuelveFalse()
         {
             var deleted = await _service.DeleteAsync(9999);
@@ -283,7 +362,7 @@ namespace ErpModa.Api.Tests
         {
             var p = await _service.CreateAsync(ProveedorValido());
 
-            // Agregar una orden de compra asociada
+            // Agregar una orden de compra asociada directamente al contexto
             _context.OrdenesCompra.Add(new OrdenCompra
             {
                 ProveedorId = p.Id,
@@ -298,6 +377,28 @@ namespace ErpModa.Api.Tests
             await _context.SaveChangesAsync();
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => _service.DeleteAsync(p.Id));
+        }
+
+        [Fact]
+        public void ModeloEfCore_Proveedor_TieneIndiceUnicoNit()
+        {
+            var entityType = _context.Model.FindEntityType(typeof(Proveedor));
+            Assert.NotNull(entityType);
+
+            var indiceNit = entityType!.GetIndexes()
+                .FirstOrDefault(i => i.Properties.Any(p => p.Name == "Nit"));
+            Assert.NotNull(indiceNit);
+            Assert.True(indiceNit.IsUnique);
+        }
+
+        [Fact]
+        public void ModeloEfCore_Proveedor_TieneTokenConcurrencia()
+        {
+            var entityType = _context.Model.FindEntityType(typeof(Proveedor));
+            Assert.NotNull(entityType);
+
+            var versionProp = entityType!.FindProperty("Version");
+            Assert.NotNull(versionProp);
         }
 
         [Fact]
@@ -328,6 +429,65 @@ namespace ErpModa.Api.Tests
                 .ToList();
             Assert.Single(fkHaciaOrden);
             Assert.Equal("OrdenCompraId", fkHaciaOrden[0].Properties[0].Name);
+        }
+    }
+
+    /// <summary>
+    /// Implementación en memoria de IAuditoriaLogService para pruebas.
+    /// </summary>
+    public class AuditoriaLogServiceFake : IAuditoriaLogService
+    {
+        private readonly List<AuditoriaLog> _logs;
+
+        public AuditoriaLogServiceFake(List<AuditoriaLog> logs)
+        {
+            _logs = logs;
+        }
+
+        public Task RegistrarAsync(string usuarioId, string entidad, int? entidadId, string operacion,
+            string? datosAnteriores = null, string? datosNuevos = null, string? usuarioNombre = null,
+            string? direccionIp = null)
+        {
+            _logs.Add(new AuditoriaLog
+            {
+                UsuarioId = usuarioId ?? string.Empty,
+                UsuarioNombre = usuarioNombre,
+                Entidad = entidad,
+                EntidadId = entidadId,
+                Operacion = operacion,
+                DatosAnteriores = datosAnteriores,
+                DatosNuevos = datosNuevos,
+                FechaOperacion = DateTime.UtcNow,
+                DireccionIp = direccionIp
+            });
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// Implementación simplificada de IWorkflowService para pruebas (delega al contexto real).
+    /// </summary>
+    public class WorkflowServiceFake : IWorkflowService
+    {
+        private readonly ErpModaDbContext _context;
+        private readonly IAuditoriaLogService _auditoria;
+
+        public WorkflowServiceFake(ErpModaDbContext context, IAuditoriaLogService auditoria)
+        {
+            _context = context;
+            _auditoria = auditoria;
+        }
+
+        public Task<ProveedorResponseDto> CambiarEstadoProveedorAsync(int proveedorId, string nuevoEstado,
+            string usuarioId, string? usuarioNombre = null, string? direccionIp = null)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<OrdenCompraResponseDto> CambiarEstadoOrdenAsync(int ordenId, string nuevoEstado,
+            string usuarioId, string? usuarioNombre = null, string? direccionIp = null)
+        {
+            throw new NotImplementedException();
         }
     }
 }

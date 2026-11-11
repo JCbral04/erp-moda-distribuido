@@ -33,6 +33,13 @@ namespace ErpModa.Api.Proveedores.Models
         [Required]
         public decimal Subtotal { get; set; }
 
+        /// <summary>
+        /// Token de concurrencia optimista.
+        /// </summary>
+        [Column("version")]
+        [Required]
+        public byte[] Version { get; set; } = Array.Empty<byte>();
+
         [ForeignKey("OrdenCompraId")]
         public OrdenCompra? OrdenCompra { get; set; }
     }

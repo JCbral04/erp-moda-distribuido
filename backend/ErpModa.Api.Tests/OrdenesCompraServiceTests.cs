@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using ErpModa.Api.Data;
 using ErpModa.Api.Inventario.Models;
@@ -8,7 +9,9 @@ using ErpModa.Api.Proveedores.DTOs;
 using ErpModa.Api.Proveedores.Interfaces;
 using ErpModa.Api.Proveedores.Models;
 using ErpModa.Api.Proveedores.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
 namespace ErpModa.Api.Tests
@@ -18,6 +21,8 @@ namespace ErpModa.Api.Tests
         private readonly string _dbName;
         private readonly ErpModaDbContext _context;
         private readonly IOrdenesCompraService _service;
+        private readonly IAuditoriaLogService _auditoria;
+        private readonly List<AuditoriaLog> _auditoriaLogs = new();
         private readonly int _proveedorId;
         private readonly int _productoId;
 
@@ -26,10 +31,25 @@ namespace ErpModa.Api.Tests
             _dbName = Guid.NewGuid().ToString();
             var options = new DbContextOptionsBuilder<ErpModaDbContext>()
                 .UseInMemoryDatabase(_dbName)
+                .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
                 .Options;
 
             _context = new ErpModaDbContext(options);
-            _service = new OrdenesCompraService(_context);
+
+            var httpContextAccessor = new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "usuario-test"),
+                        new Claim(ClaimTypes.Role, "Administrador")
+                    }, "Test"))
+                }
+            };
+
+            _auditoria = new AuditoriaLogServiceFake(_auditoriaLogs);
+            _service = new OrdenesCompraService(_context, httpContextAccessor, _auditoria);
 
             _proveedorId = CrearProveedorAsync("900999888-1", "Proveedor Test", true).GetAwaiter().GetResult();
             _productoId = CrearProductoAsync("Tela Algodón 100%").GetAwaiter().GetResult();
@@ -103,6 +123,19 @@ namespace ErpModa.Api.Tests
             Assert.Equal(10, result.Detalles[0].Cantidad);
             Assert.Equal(12000m, result.Detalles[0].PrecioUnitario);
             Assert.Equal(120000m, result.Detalles[0].Subtotal);
+        }
+
+        [Fact]
+        public async Task CrearOrdenCompra_RegistraAuditoria()
+        {
+            var dto = OrdenValida();
+
+            await _service.CreateAsync(dto);
+
+            var log = _auditoriaLogs.LastOrDefault(l => l.Entidad == "OrdenCompra" && l.Operacion == "Crear");
+            Assert.NotNull(log);
+            Assert.Equal("usuario-test", log.UsuarioId);
+            Assert.NotNull(log.DatosNuevos);
         }
 
         [Fact]
@@ -249,6 +282,35 @@ namespace ErpModa.Api.Tests
         {
             await Assert.ThrowsAsync<ArgumentException>(() => _service.GetAllAsync(estado: "EstadoInexistente"));
         }
+
+        [Fact]
+        public void ModeloEfCore_OrdenCompra_ConfiguradoCorrectamenteSinSombras()
+        {
+            var entityType = _context.Model.FindEntityType(typeof(OrdenCompra));
+            Assert.NotNull(entityType);
+
+            Assert.Null(entityType!.FindProperty("ProveedorId1"));
+
+            var fkHaciaProveedor = entityType.GetForeignKeys()
+                .Where(fk => fk.PrincipalEntityType.ClrType == typeof(Proveedor))
+                .ToList();
+            Assert.Single(fkHaciaProveedor);
+            Assert.Equal("ProveedorId", fkHaciaProveedor[0].Properties[0].Name);
+        }
+
+        [Fact]
+        public void ModeloEfCore_DetalleOrdenCompra_ConfiguradoCorrectamenteSinSombras()
+        {
+            var entityType = _context.Model.FindEntityType(typeof(DetalleOrdenCompra));
+            Assert.NotNull(entityType);
+
+            Assert.Null(entityType!.FindProperty("OrdenCompraId1"));
+
+            var fkHaciaOrden = entityType.GetForeignKeys()
+                .Where(fk => fk.PrincipalEntityType.ClrType == typeof(OrdenCompra))
+                .ToList();
+            Assert.Single(fkHaciaOrden);
+            Assert.Equal("OrdenCompraId", fkHaciaOrden[0].Properties[0].Name);
+        }
     }
 }
-

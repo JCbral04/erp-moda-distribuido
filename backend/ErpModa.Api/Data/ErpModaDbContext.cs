@@ -28,6 +28,9 @@ namespace ErpModa.Api.Data
         public DbSet<OrdenCompra> OrdenesCompra { get; set; }
         public DbSet<DetalleOrdenCompra> DetallesOrdenCompra { get; set; }
 
+        // Auditoría
+        public DbSet<AuditoriaLog> AuditoriaLogs { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -90,9 +93,35 @@ namespace ErpModa.Api.Data
             modelBuilder.Entity<DetalleVenta>().ToTable("detalle_venta");
             modelBuilder.Entity<Factura>().ToTable("facturas");
             modelBuilder.Entity<ContadorFactura>().ToTable("contador_factura");
-            modelBuilder.Entity<Proveedor>().ToTable("proveedores");
-            modelBuilder.Entity<OrdenCompra>().ToTable("ordenes_compra");
-            modelBuilder.Entity<DetalleOrdenCompra>().ToTable("detalles_orden_compra");
+
+            // Proveedores - Configuración con restricciones e índices
+            modelBuilder.Entity<Proveedor>(entity =>
+            {
+                entity.ToTable("proveedores");
+                entity.HasIndex(p => p.Nit).IsUnique();
+                entity.Property(p => p.Version).IsRowVersion();
+            });
+
+            modelBuilder.Entity<OrdenCompra>(entity =>
+            {
+                entity.ToTable("ordenes_compra");
+                entity.Property(o => o.Version).IsRowVersion();
+            });
+
+            modelBuilder.Entity<DetalleOrdenCompra>(entity =>
+            {
+                entity.ToTable("detalles_orden_compra");
+                entity.Property(d => d.Version).IsRowVersion();
+            });
+
+            // Auditoría
+            modelBuilder.Entity<AuditoriaLog>(entity =>
+            {
+                entity.ToTable("auditoria_log");
+                entity.HasIndex(a => a.FechaOperacion);
+                entity.HasIndex(a => a.Entidad);
+                entity.HasIndex(a => a.UsuarioId);
+            });
 
             // Configurar precisión decimal para campos monetarios
             modelBuilder.Entity<Producto>()

@@ -21,6 +21,7 @@ CREATE TABLE proveedores (
     activo               BOOLEAN      NOT NULL DEFAULT TRUE,
     creado_en            TIMESTAMPTZ  NOT NULL DEFAULT now(),
     actualizado_en       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    version              BYTEA        NOT NULL DEFAULT '\x'::bytea,
 
     CONSTRAINT uq_proveedores_nit UNIQUE (nit)
 );
@@ -45,6 +46,7 @@ CREATE TABLE ordenes_compra (
     observaciones  VARCHAR(500),
     creado_en      TIMESTAMPTZ   NOT NULL DEFAULT now(),
     actualizado_en TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    version        BYTEA         NOT NULL DEFAULT '\x'::bytea,
 
     CONSTRAINT ck_ordenes_compra_total_coherente CHECK (subtotal + impuesto = total)
 );
@@ -64,6 +66,7 @@ CREATE TABLE detalles_orden_compra (
     cantidad         INTEGER       NOT NULL CHECK (cantidad > 0),
     precio_unitario  NUMERIC(12,2) NOT NULL CHECK (precio_unitario >= 0),
     subtotal         NUMERIC(12,2) NOT NULL CHECK (subtotal >= 0),
+    version          BYTEA         NOT NULL DEFAULT '\x'::bytea,
 
     CONSTRAINT ck_detalles_orden_subtotal_coherente CHECK (subtotal = cantidad * precio_unitario)
 );
@@ -71,5 +74,24 @@ CREATE TABLE detalles_orden_compra (
 CREATE INDEX ix_detalles_orden_compra_orden_id    ON detalles_orden_compra (orden_compra_id);
 CREATE INDEX ix_detalles_orden_compra_producto_id ON detalles_orden_compra (producto_id);
 
-COMMIT;
+-- ===========================================================================
+-- auditoria_log: bitacora de acciones del modulo Proveedores
+-- ===========================================================================
+CREATE TABLE auditoria_log (
+    id               SERIAL PRIMARY KEY,
+    usuario_id       VARCHAR(100)  NOT NULL,
+    usuario_nombre   VARCHAR(200),
+    entidad          VARCHAR(100)  NOT NULL,
+    entidad_id       INTEGER,
+    operacion        VARCHAR(50)   NOT NULL,
+    datos_anteriores TEXT,
+    datos_nuevos     TEXT,
+    fecha_operacion  TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    direccion_ip     VARCHAR(50)
+);
 
+CREATE INDEX ix_auditoria_fecha_operacion ON auditoria_log (fecha_operacion);
+CREATE INDEX ix_auditoria_entidad         ON auditoria_log (entidad);
+CREATE INDEX ix_auditoria_usuario_id      ON auditoria_log (usuario_id);
+
+COMMIT;

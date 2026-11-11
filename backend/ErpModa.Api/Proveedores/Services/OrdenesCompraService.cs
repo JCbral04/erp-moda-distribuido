@@ -1,23 +1,50 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using ErpModa.Api.Data;
 using ErpModa.Api.Proveedores.DTOs;
 using ErpModa.Api.Proveedores.Interfaces;
 using ErpModa.Api.Proveedores.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 
 namespace ErpModa.Api.Proveedores.Services
 {
+    /// <summary>
+    /// Implementación de los servicios de órdenes de compra sobre ErpModaDbContext.
+    /// Incluye validación de existencia de proveedor (activo), existencia de productos,
+    /// cálculos monetarios con precisión decimal y trazabilidad de auditoría.
+    /// </summary>
     public class OrdenesCompraService : IOrdenesCompraService
     {
         private readonly ErpModaDbContext _context;
+        private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly IAuditoriaLogService _auditoria;
 
-        public OrdenesCompraService(ErpModaDbContext context)
+        public OrdenesCompraService(
+            ErpModaDbContext context,
+            IHttpContextAccessor httpContextAccessor,
+            IAuditoriaLogService auditoria)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
+            _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
+            _auditoria = auditoria ?? throw new ArgumentNullException(nameof(auditoria));
         }
+
+        private string? UsuarioId =>
+            _httpContextAccessor.HttpContext?.User?.Identity?.IsAuthenticated == true
+                ? _httpContextAccessor.HttpContext.User.Identity.Name
+                : null;
+
+        private string? UsuarioNombre =>
+            _httpContextAccessor.HttpContext?.User?.Identity?.IsAuthenticated == true
+                ? _httpContextAccessor.HttpContext.User.Identity.Name
+                : null;
+
+        private string? DireccionIp =>
+            _httpContextAccessor.HttpContext?.Connection?.RemoteIpAddress?.ToString();
 
         public async Task<IEnumerable<OrdenCompraResponseDto>> GetAllAsync(int? proveedorId = null, string? estado = null)
         {
@@ -41,7 +68,7 @@ namespace ErpModa.Api.Proveedores.Services
                 query = query.Where(o => o.EstadoStr == estadoParsed.ToString());
             }
 
-            var ordenes = await query.ToListAsync();
+            var ordenes = await query.OrderByDescending(o => o.Fecha).ThenByDescending(o => o.Id).ToListAsync();
             return ordenes.Select(MapToResponse);
         }
 
@@ -67,9 +94,10 @@ namespace ErpModa.Api.Proveedores.Services
             if (proveedor == null)
                 throw new ArgumentException($"El proveedor con Id {crearDto.ProveedorId} no existe.");
 
-            // Regla de Negocio RN-003: Un proveedor inactivo no puede recibir nuevas órdenes
+            // Regla de Negocio RN-003: Un proveedor inactivo no puede recibir nuevas órdenes.
             if (!proveedor.Activo)
-                throw new InvalidOperationException($"No se pueden crear órdenes de compra para el proveedor '{proveedor.Nombre}' porque se encuentra inactivo.");
+                throw new InvalidOperationException(
+                    $"No se pueden crear órdenes de compra para el proveedor '{proveedor.Nombre}' porque se encuentra inactivo.");
 
             if (crearDto.Detalles == null || !crearDto.Detalles.Any())
                 throw new ArgumentException("La orden de compra debe contener al menos un detalle.");
@@ -89,11 +117,12 @@ namespace ErpModa.Api.Proveedores.Services
                     ProductoId = d.ProductoId,
                     Cantidad = d.Cantidad,
                     PrecioUnitario = d.PrecioUnitario,
-                    Subtotal = d.Cantidad * d.PrecioUnitario
+                    Subtotal = d.Cantidad * d.PrecioUnitario,
+                    Version = Guid.NewGuid().ToByteArray()
                 });
             }
 
-            // Validar que los productos referenciados existan en Inventario
+            // Validar que los productos referenciados existan en Inventario.
             var productoIds = detalleEntidades.Select(d => d.ProductoId).Distinct().ToList();
             var productosExistentes = await _context.Productos
                 .Where(p => productoIds.Contains(p.Id))
@@ -116,15 +145,45 @@ namespace ErpModa.Api.Proveedores.Services
                 Subtotal = subtotal,
                 Impuesto = impuesto,
                 Total = total,
-                Observaciones = crearDto.Observaciones?.Trim(),
+                Observaciones = string.IsNullOrWhiteSpace(crearDto.Observaciones)
+                    ? null
+                    : crearDto.Observaciones.Trim(),
                 CreadoEn = DateTime.UtcNow,
                 ActualizadoEn = DateTime.UtcNow,
+                Version = Guid.NewGuid().ToByteArray(),
                 Detalles = detalleEntidades,
                 Proveedor = proveedor
             };
 
-            _context.OrdenesCompra.Add(orden);
-            await _context.SaveChangesAsync();
+            // Transacción para garantizar consistencia si falla el guardado de algún detalle.
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                _context.OrdenesCompra.Add(orden);
+                await _context.SaveChangesAsync();
+
+                var datosNuevos = JsonSerializer.Serialize(new
+                {
+                    ProveedorId = orden.ProveedorId,
+                    Subtotal = orden.Subtotal,
+                    Impuesto = orden.Impuesto,
+                    Total = orden.Total,
+                    Estado = orden.EstadoStr,
+                    DetalleCount = orden.Detalles.Count
+                });
+
+                await _auditoria.RegistrarAsync(
+                    UsuarioId ?? string.Empty, "OrdenCompra", orden.Id, "Crear",
+                    null, datosNuevos, UsuarioNombre, DireccionIp);
+
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
 
             return MapToResponse(orden);
         }
@@ -155,4 +214,3 @@ namespace ErpModa.Api.Proveedores.Services
         }
     }
 }
-

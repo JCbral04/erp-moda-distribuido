@@ -5,9 +5,14 @@ using ErpModa.Api.Proveedores.Interfaces;
 using ErpModa.Api.Proveedores.Services;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddHttpContextAccessor();
 
 // Add services to the container.
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
@@ -26,6 +31,36 @@ builder.Services.AddScoped<IVentasService, VentasService>();
 builder.Services.AddScoped<IProductosService, ProductosService>();
 builder.Services.AddScoped<IProveedoresService, ProveedoresService>();
 builder.Services.AddScoped<IOrdenesCompraService, OrdenesCompraService>();
+builder.Services.AddScoped<IAuditoriaLogService, AuditoriaLogService>();
+builder.Services.AddScoped<IWorkflowService, WorkflowService>();
+
+// --- Autenticación y autorización (JWT) ---
+var jwtSection = builder.Configuration.GetSection("Jwt");
+var jwtKey = jwtSection["Key"] ?? "erp-moda-distribuido-super-secreto-clave-de-almenos-32-caracteres";
+var jwtIssuer = jwtSection["Issuer"] ?? "erp-moda-distribuido";
+var jwtAudience = jwtSection["Audience"] ?? "erp-moda-distribuido-client";
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtAudience,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+            ClockSkew = TimeSpan.FromMinutes(1)
+        };
+    });
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("Administrador", policy =>
+        policy.RequireRole("Administrador"));
+});
 
 // Add health checks
 builder.Services.AddHealthChecks()
@@ -41,6 +76,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
 app.MapControllers();
 
 // Add health check endpoint

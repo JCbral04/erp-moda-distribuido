@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ErpModa.Api.Proveedores.DTOs;
 using ErpModa.Api.Proveedores.Interfaces;
@@ -9,6 +10,7 @@ namespace ErpModa.Api.Proveedores.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize(Roles = "Administrador")]
     public class ProveedoresController : ControllerBase
     {
         private readonly IProveedoresService _service;
@@ -21,17 +23,31 @@ namespace ErpModa.Api.Proveedores.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<ProveedorResponseDto>>> GetAll([FromQuery] bool? activo)
         {
-            var result = await _service.GetAllAsync(activo);
-            return Ok(result);
+            try
+            {
+                var result = await _service.GetAllAsync(activo);
+                return Ok(result);
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al obtener los proveedores.");
+            }
         }
 
         [HttpGet("{id}")]
         public async Task<ActionResult<ProveedorResponseDto>> GetById(int id)
         {
-            var result = await _service.GetByIdAsync(id);
-            if (result == null)
-                return NotFound();
-            return Ok(result);
+            try
+            {
+                var result = await _service.GetByIdAsync(id);
+                if (result == null)
+                    return NotFound();
+                return Ok(result);
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al obtener el proveedor.");
+            }
         }
 
         [HttpPost]
@@ -45,6 +61,10 @@ namespace ErpModa.Api.Proveedores.Controllers
             catch (ArgumentException ex)
             {
                 return BadRequest(ex.Message);
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al crear el proveedor.");
             }
         }
 
@@ -62,6 +82,10 @@ namespace ErpModa.Api.Proveedores.Controllers
             {
                 return BadRequest(ex.Message);
             }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al actualizar el proveedor.");
+            }
         }
 
         [HttpDelete("{id}")]
@@ -78,7 +102,10 @@ namespace ErpModa.Api.Proveedores.Controllers
             {
                 return BadRequest(ex.Message);
             }
+            catch (Exception)
+            {
+                return StatusCode(500, "Ocurrió un error al eliminar el proveedor.");
+            }
         }
     }
 }
-

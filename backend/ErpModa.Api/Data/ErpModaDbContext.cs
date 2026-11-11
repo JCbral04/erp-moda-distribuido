@@ -1,4 +1,5 @@
 using ErpModa.Api.Inventario.Models;
+using ErpModa.Api.Proveedores.Models;
 using ErpModa.Api.Ventas.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -21,6 +22,11 @@ namespace ErpModa.Api.Data
         public DbSet<DetalleVenta> DetalleVenta { get; set; }
         public DbSet<Factura> Facturas { get; set; }
         public DbSet<ContadorFactura> ContadoresFactura { get; set; }
+
+        // Proveedores
+        public DbSet<Proveedor> Proveedores { get; set; }
+        public DbSet<OrdenCompra> OrdenesCompra { get; set; }
+        public DbSet<DetalleOrdenCompra> DetallesOrdenCompra { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -62,6 +68,20 @@ namespace ErpModa.Api.Data
             // y puede ejecutarse en cualquier orden. Cuando se consoliden esquemas
             // se puede endurecer como FK.
 
+            // Proveedores - Proveedor 1:N OrdenCompra
+            modelBuilder.Entity<Proveedor>()
+                .HasMany(p => p.OrdenesCompra)
+                .WithOne(o => o.Proveedor)
+                .HasForeignKey(o => o.ProveedorId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Proveedores - OrdenCompra 1:N DetalleOrdenCompra
+            modelBuilder.Entity<OrdenCompra>()
+                .HasMany(o => o.Detalles)
+                .WithOne(d => d.OrdenCompra)
+                .HasForeignKey(d => d.OrdenCompraId)
+                .OnDelete(DeleteBehavior.Cascade);
+
             // Configurar nombres de tablas explícitamente (por si acaso)
             modelBuilder.Entity<Producto>().ToTable("productos");
             modelBuilder.Entity<Variante>().ToTable("variantes");
@@ -70,6 +90,9 @@ namespace ErpModa.Api.Data
             modelBuilder.Entity<DetalleVenta>().ToTable("detalle_venta");
             modelBuilder.Entity<Factura>().ToTable("facturas");
             modelBuilder.Entity<ContadorFactura>().ToTable("contador_factura");
+            modelBuilder.Entity<Proveedor>().ToTable("proveedores");
+            modelBuilder.Entity<OrdenCompra>().ToTable("ordenes_compra");
+            modelBuilder.Entity<DetalleOrdenCompra>().ToTable("detalles_orden_compra");
 
             // Configurar precisión decimal para campos monetarios
             modelBuilder.Entity<Producto>()
@@ -114,6 +137,26 @@ namespace ErpModa.Api.Data
 
             modelBuilder.Entity<Factura>()
                 .Property(f => f.Total)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .Property(o => o.Subtotal)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .Property(o => o.Impuesto)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .Property(o => o.Total)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<DetalleOrdenCompra>()
+                .Property(d => d.PrecioUnitario)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<DetalleOrdenCompra>()
+                .Property(d => d.Subtotal)
                 .HasPrecision(12, 2);
         }
     }

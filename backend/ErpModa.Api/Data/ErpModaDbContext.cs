@@ -1,4 +1,6 @@
 using ErpModa.Api.Inventario.Models;
+using ErpModa.Api.Proveedores.Models;
+using ErpModa.Api.Proveedores.OrdenesCompra.Models;
 using ErpModa.Api.Ventas.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,6 +17,13 @@ namespace ErpModa.Api.Data
         public DbSet<Producto> Productos { get; set; }
         public DbSet<Variante> Variantes { get; set; }
         public DbSet<MovimientoStock> MovimientosStock { get; set; }
+
+        // Proveedores
+        public DbSet<Proveedor> Proveedores { get; set; }
+
+        // Órdenes de Compra
+        public DbSet<OrdenCompra> OrdenesCompra { get; set; }
+        public DbSet<DetalleOrdenCompra> DetalleOrdenCompra { get; set; }
 
         // Ventas
         public DbSet<Venta> Ventas { get; set; }
@@ -115,6 +124,44 @@ namespace ErpModa.Api.Data
             modelBuilder.Entity<Factura>()
                 .Property(f => f.Total)
                 .HasPrecision(12, 2);
+
+            // Configurar precisión decimal para campos monetarios - Proveedores y Órdenes de Compra
+            modelBuilder.Entity<Proveedor>()
+                .HasIndex(p => p.Nit)
+                .IsUnique();
+
+            modelBuilder.Entity<Proveedor>()
+                .Property(p => p.Nit)
+                .HasMaxLength(20);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .Property(o => o.Subtotal)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .Property(o => o.Total)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<DetalleOrdenCompra>()
+                .Property(d => d.PrecioUnitario)
+                .HasPrecision(12, 2);
+
+            modelBuilder.Entity<DetalleOrdenCompra>()
+                .Property(d => d.Subtotal)
+                .HasPrecision(12, 2);
+
+            // Configurar Version como token de concurrencia optimista para PostgreSQL
+            modelBuilder.Entity<Proveedor>()
+                .Property(p => p.Version)
+                .IsConcurrencyToken();
+
+            modelBuilder.Entity<OrdenCompra>()
+                .Property(o => o.Version)
+                .IsConcurrencyToken();
+
+            modelBuilder.Entity<DetalleOrdenCompra>()
+                .Property(d => d.Version)
+                .IsConcurrencyToken();
         }
     }
 }

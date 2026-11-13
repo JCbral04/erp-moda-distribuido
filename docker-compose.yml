@@ -58,6 +58,9 @@ services:
     build: ./ai
     container_name: erp-ia
     restart: unless-stopped
+    # Issue #60: en produccion este puerto NO debe publicarse al host; el
+    # backend lo alcanza por la red interna erp-net (http://ia:8000).
+    # Quitar "ports" cuando haya despliegue real.
     ports:
       - "8000:8000"
     networks:

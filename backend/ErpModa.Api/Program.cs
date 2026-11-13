@@ -7,39 +7,38 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
 
-// Configure DbContext with PostgreSQL
 builder.Services.AddDbContext<ErpModaDbContext>(options =>
     options.UseNpgsql(
         builder.Configuration.GetConnectionString("DefaultConnection")
     ));
 
-// Register services as scoped (DbContext is scoped)
 builder.Services.AddScoped<IVentasService, VentasService>();
 builder.Services.AddScoped<IProductosService, ProductosService>();
 
-// Add health checks
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<ErpModaDbContext>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+else
+{
+    // Produccion: HSTS (max-age 30 dias, incluye subdominios) + preload.
+    app.UseHsts();
+}
 
+// UseHttpsRedirection activo en todos los entornos: es no-op cuando no hay
+// puerto HTTPS configurado (docs/seguridad/tls-por-entorno.md).
 app.UseHttpsRedirection();
 app.MapControllers();
-
-// Add health check endpoint
 app.MapHealthChecks("/health");
 
 app.Run();

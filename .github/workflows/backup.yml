@@ -1,0 +1,30 @@
+# Backup semanal de PostgreSQL con pg_dump (issue #63).
+# Corre los domingos a las 03:00 UTC y deja el dump como artifact 30 dias.
+name: backup-db
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backup de la BD
+        env:
+          # Secret de repo con la URI del pooler de Supabase (NO el formato Npgsql).
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: ./scripts/backup-db.sh backup.sql.gz
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ github.run_id }}
+          path: backup.sql.gz
+          retention-days: 30

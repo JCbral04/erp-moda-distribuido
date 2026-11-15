@@ -3,6 +3,7 @@ using ErpModa.Api.Proveedores.Interfaces;
 using ErpModa.Api.Proveedores.OrdenesCompra.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
 
 namespace ErpModa.Api.Tests;
 
@@ -16,39 +17,159 @@ public class ConcurrencyException : Exception
 
 /// <summary>
 /// Clase base para pruebas que usan PostgreSQL real (no InMemory).
-/// Verifica la persistencia real y la concurrencia optimista.
+/// Cada instancia (es decir, cada prueba) crea una base de datos temporal
+/// independiente, aplica todas las migraciones de EF Core y la elimina al finalizar.
 /// </summary>
 public abstract class BasePostgreSQLTest : IDisposable
 {
+    /// <summary>Variable de entorno con la cadena de conexión administrativa.</summary>
+    private const string ConnectionEnvironmentVariable = "PostgreSqlConnection__String";
+
+    /// <summary>Base de datos de mantenimiento sobre la que se ejecutan CREATE/DROP DATABASE.</summary>
+    private const string MaintenanceDatabase = "postgres";
+
+    /// <summary>Ensamblado que contiene las migraciones de EF Core.</summary>
+    private const string MigrationsAssembly = "ErpModa.Api";
+
+    /// <summary>
+    /// Prefijo de las bases temporales. Solo minúsculas, dígitos y guion bajo,
+    /// así que el nombre generado es un identificador válido sin necesidad de escapes.
+    /// </summary>
+    private const string DatabaseNamePrefix = "erp_moda_test_";
+
     protected readonly ErpModaDbContext _context;
     protected readonly string _dbName;
 
+    private readonly string _adminConnectionString;
+
+    /// <summary>Indica si esta instancia creó realmente la base temporal.</summary>
+    private bool _databaseCreated;
+
+    private bool _disposed;
+
     protected BasePostgreSQLTest()
     {
-        _dbName = $"test_erp_moda_{Guid.NewGuid().ToString("N")}_{DateTime.UtcNow.Ticks}";
+        _dbName = $"{DatabaseNamePrefix}{Guid.NewGuid():N}";
 
-        var connectionString = System.Environment.GetEnvironmentVariable("PostgreSqlConnection__String");
-            if (string.IsNullOrEmpty(connectionString))
-                throw new InvalidOperationException("No se encontró la variable de entorno 'PostgreSqlConnection__String'. Configurela para ejecutar pruebas con PostgreSQL.");
+        var connectionString = System.Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(connectionString))
+            throw new InvalidOperationException($"No se encontró la variable de entorno '{ConnectionEnvironmentVariable}'. Configurela para ejecutar pruebas con PostgreSQL.");
+
+        _adminConnectionString = BuildConnectionString(connectionString, MaintenanceDatabase);
+
+        var testConnectionString = BuildConnectionString(connectionString, _dbName, disablePooling: true);
+
+        ErpModaDbContext? context = null;
+        try
+        {
+            CreateDatabase();
+            _databaseCreated = true;
+
             var options = new DbContextOptionsBuilder<ErpModaDbContext>()
-                .UseNpgsql(connectionString, o => o.MigrationsAssembly("ErpModa.Api"))
+                .UseNpgsql(testConnectionString, o => o.MigrationsAssembly(MigrationsAssembly))
                 .Options;
 
-        _context = new ErpModaDbContext(options);
+            context = new ErpModaDbContext(options);
+            context.Database.Migrate();
+        }
+        catch
+        {
+            try
+            {
+                context?.Dispose();
+            }
+            catch
+            {
+            }
+
+            DeleteDatabaseQuietly();
+            throw;
+        }
+
+        _context = context;
     }
 
     public virtual void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
         try
         {
-            _context.Database.EnsureDeleted();
+            _context?.Dispose();
         }
         catch
         {
-            // Ignorar errores de eliminación en tests
         }
-        _context.Dispose();
+
+        DeleteDatabaseQuietly();
     }
+
+    private static string BuildConnectionString(string connectionString, string database, bool disablePooling = false)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            Database = database
+        };
+
+        if (disablePooling)
+        {
+            builder.Pooling = false;
+        }
+
+        return builder.ConnectionString;
+    }
+
+    private void CreateDatabase()
+    {
+        using var connection = new NpgsqlConnection(_adminConnectionString);
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"CREATE DATABASE {QuoteIdentifier(_dbName)}";
+        command.ExecuteNonQuery();
+    }
+
+    private void DeleteDatabase()
+    {
+        using var connection = new NpgsqlConnection(_adminConnectionString);
+        connection.Open();
+
+        using (var terminate = connection.CreateCommand())
+        {
+            terminate.CommandText =
+                "SELECT pg_terminate_backend(pid) " +
+                "FROM pg_stat_activity " +
+                "WHERE datname = CAST(@databaseName AS name) AND pid <> pg_backend_pid();";
+            terminate.Parameters.AddWithValue("databaseName", _dbName);
+            terminate.ExecuteNonQuery();
+        }
+
+        using var drop = connection.CreateCommand();
+        drop.CommandText = $"DROP DATABASE IF EXISTS {QuoteIdentifier(_dbName)}";
+        drop.ExecuteNonQuery();
+    }
+
+    private void DeleteDatabaseQuietly()
+    {
+        if (!_databaseCreated)
+            return;
+
+        _databaseCreated = false;
+
+        try
+        {
+            DeleteDatabase();
+        }
+        catch
+        {
+        }
+    }
+
+    private static string QuoteIdentifier(string identifier) =>
+        "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
     protected async Task<int> CreateTestProveedorAsync(string nit = "901234567-5", string razonSocial = "Test Proveedor")
     {
@@ -100,13 +221,11 @@ public abstract class BasePostgreSQLTest : IDisposable
 
     protected IProveedoresService GetProveedoresService()
     {
-        // El servicio se crea manualmente para tests
         return new ErpModa.Api.Proveedores.Services.ProveedoresService(_context);
     }
 
     protected IOrdenesCompraService GetOrdenesCompraService()
     {
-        // El servicio se crea manualmente para tests
         return new ErpModa.Api.Proveedores.OrdenesCompra.Services.OrdenesCompraService(_context);
     }
 

@@ -76,6 +76,13 @@ namespace ErpModa.Api.Data
             modelBuilder.Entity<Variante>().ToTable("variantes");
             modelBuilder.Entity<MovimientoStock>().ToTable("movimientos_stock");
             modelBuilder.Entity<Venta>().ToTable("ventas");
+
+            modelBuilder.Entity<Venta>()
+                .Property(v => v.VendedorId)
+                .HasMaxLength(150);
+
+            modelBuilder.Entity<Venta>()
+                .HasIndex(v => v.VendedorId);
             modelBuilder.Entity<DetalleVenta>().ToTable("detalle_venta");
             modelBuilder.Entity<Factura>().ToTable("facturas");
             modelBuilder.Entity<ContadorFactura>().ToTable("contador_factura");
@@ -149,6 +156,19 @@ namespace ErpModa.Api.Data
             modelBuilder.Entity<DetalleOrdenCompra>()
                 .Property(d => d.Subtotal)
                 .HasPrecision(12, 2);
+
+            // Relaciones Proveedores y Ordenes de Compra
+            modelBuilder.Entity<OrdenCompra>()
+                .HasOne<Proveedor>()
+                .WithMany()
+                .HasForeignKey(o => o.ProveedorId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .HasMany(o => o.Detalles)
+                .WithOne()
+                .HasForeignKey(d => d.OrdenCompraId)
+                .OnDelete(DeleteBehavior.Cascade);
 
             // Configurar Version como token de concurrencia optimista para PostgreSQL
             modelBuilder.Entity<Proveedor>()

@@ -40,7 +40,7 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
             Email = "inactiva@telas.com",
             TiempoEntrega = 5
         });
-        await _proveedoresService.UpdateAsync(creado.Id, new ActualizarProveedorDto { Estado = "Inactivo" });
+        await _proveedoresService.UpdateAsync(creado.Id, new ActualizarProveedorDto { Estado = "Inactivo", Version = creado.Version });
         return creado.Id;
     }
 

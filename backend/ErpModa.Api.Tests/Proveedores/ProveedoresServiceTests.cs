@@ -42,7 +42,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Equal("901234567-5", result.Nit);
         Assert.Equal("contacto@telasdelvalle.com", result.Email);
         Assert.Equal("Activo", result.Estado);
-        Assert.Equal(0, result.Version);
+        Assert.Equal(1, result.Version);
     }
 
     [Fact]
@@ -73,7 +73,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
 
         Assert.NotNull(result);
         Assert.Equal(id, result.Id);
-        Assert.Equal("Telas del Valle SAS", result.RazonSocial);
+        Assert.Equal("Test Proveedor", result.RazonSocial);
     }
 
     [Fact]
@@ -125,7 +125,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
             Version = 999
         };
 
-        var ex = await Assert.ThrowsAsync<ConcurrencyException>(() =>
+        var ex = await Assert.ThrowsAsync<ErpModa.Api.Proveedores.Services.ConcurrencyException>(() =>
             _service.UpdateAsync(id, updater));
 
         Assert.Contains("modificado por otro usuario", ex.Message);

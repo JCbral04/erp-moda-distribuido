@@ -1,6 +1,10 @@
 using ErpModa.Api.Data;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
+using ErpModa.Api.Proveedores.Interfaces;
+using ErpModa.Api.Proveedores.Services;
+using ErpModa.Api.Proveedores.OrdenesCompra.Interfaces;
+using ErpModa.Api.Proveedores.OrdenesCompra.Services;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Services;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +26,8 @@ builder.Services.AddDbContext<ErpModaDbContext>(options =>
 // Register services as scoped (DbContext is scoped)
 builder.Services.AddScoped<IVentasService, VentasService>();
 builder.Services.AddScoped<IProductosService, ProductosService>();
+builder.Services.AddScoped<IProveedoresService, ProveedoresService>();
+builder.Services.AddScoped<IOrdenesCompraService, OrdenesCompraService>();
 
 // Add health checks
 builder.Services.AddHealthChecks()

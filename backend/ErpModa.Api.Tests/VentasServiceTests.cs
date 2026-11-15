@@ -15,6 +15,8 @@ public class VentasServiceTests : IDisposable
     private readonly IVentasService _service;
     private readonly int _varianteId;
 
+    private const string UsuarioPrueba = "usuario-prueba";
+
     public VentasServiceTests()
     {
         _dbName = Guid.NewGuid().ToString();
@@ -84,7 +86,7 @@ public class VentasServiceTests : IDisposable
     [Fact]
     public async Task CrearVenta_ConDetallesValidos_CreaVentaPendiente()
     {
-        var result = await _service.CreateAsync(VentaValida());
+        var result = await _service.CreateAsync(VentaValida(), UsuarioPrueba);
 
         Assert.True(result.Id > 0);
         Assert.Equal("Pendiente", result.Estado);
@@ -98,9 +100,9 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVenta_PorId_DevuelveVentaCreada()
     {
         var service = _service;
-        var created = await service.CreateAsync(VentaValida());
+        var created = await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
-        var result = await service.GetByIdAsync(created.Id);
+        var result = await service.GetByIdAsync(created.Id, UsuarioPrueba, true);
 
         Assert.NotNull(result);
         Assert.Equal(created.Id, result.Id);
@@ -113,7 +115,7 @@ public class VentasServiceTests : IDisposable
         var service = _service;
         var dto = new CrearVentaDto { MetodoPago = "Efectivo", Detalles = new List<DetalleCrearDto>() };
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto, UsuarioPrueba));
     }
 
     [Theory]
@@ -125,7 +127,7 @@ public class VentasServiceTests : IDisposable
         var dto = VentaValida();
         dto.Detalles[0].Cantidad = cantidad;
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto, UsuarioPrueba));
     }
 
     [Theory]
@@ -137,7 +139,7 @@ public class VentasServiceTests : IDisposable
         var dto = VentaValida();
         dto.Detalles[0].PrecioUnitario = precio;
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto, UsuarioPrueba));
     }
 
     [Theory]
@@ -149,7 +151,7 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(VentaValida(metodoPago)));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(VentaValida(metodoPago), UsuarioPrueba));
     }
 
     [Fact]
@@ -166,7 +168,7 @@ public class VentasServiceTests : IDisposable
             }
         };
 
-        var ex = await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto));
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(dto, UsuarioPrueba));
         // El mensaje debe identificar el ID de la variante inexistente.
         Assert.Contains(varianteInexistente.ToString(), ex.Message);
     }
@@ -175,9 +177,9 @@ public class VentasServiceTests : IDisposable
     public async Task ConfirmarVenta_EnPendiente_CambiaAConfirmada()
     {
         var service = _service;
-        var created = await service.CreateAsync(VentaValida());
+        var created = await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
-        var result = await service.ConfirmarAsync(created.Id);
+        var result = await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
         Assert.Equal("Confirmada", result.Estado);
     }
@@ -187,31 +189,31 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
 
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.ConfirmarAsync(999));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.ConfirmarAsync(999, UsuarioPrueba, true));
     }
 
     [Fact]
     public async Task ConfirmarVenta_YaConfirmada_LanzaInvalidOperationException()
     {
         var service = _service;
-        var created = await service.CreateAsync(VentaValida());
-        await service.ConfirmarAsync(created.Id);
+        var created = await service.CreateAsync(VentaValida(), UsuarioPrueba);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ConfirmarAsync(created.Id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ConfirmarAsync(created.Id, UsuarioPrueba, true));
     }
 
     [Fact]
     public async Task AnularVenta_CambiaAAnulada_ConservaMotivoYNoElimina()
     {
         var service = _service;
-        var created = await service.CreateAsync(VentaValida());
+        var created = await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
-        var result = await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "Error de registro" });
+        var result = await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "Error de registro" }, UsuarioPrueba, true);
 
         Assert.Equal("Anulada", result.Estado);
         Assert.Equal("Error de registro", result.MotivoAnulacion);
 
-        var obtenida = await service.GetByIdAsync(created.Id);
+        var obtenida = await service.GetByIdAsync(created.Id, UsuarioPrueba, true);
         Assert.NotNull(obtenida);
         Assert.Equal("Anulada", obtenida.Estado);
     }
@@ -222,28 +224,28 @@ public class VentasServiceTests : IDisposable
         var service = _service;
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
-            service.AnularAsync(999, new AnularVentaDto { Motivo = "prueba" }));
+            service.AnularAsync(999, new AnularVentaDto { Motivo = "prueba" }, UsuarioPrueba, true));
     }
 
     [Fact]
     public async Task AnularVenta_YaAnulada_LanzaInvalidOperationException()
     {
         var service = _service;
-        var created = await service.CreateAsync(VentaValida());
-        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "primer motivo" });
+        var created = await service.CreateAsync(VentaValida(), UsuarioPrueba);
+        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "primer motivo" }, UsuarioPrueba, true);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "segundo motivo" }));
+            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "segundo motivo" }, UsuarioPrueba, true));
     }
 
     [Fact]
     public async Task AnularVenta_SinMotivo_LanzaArgumentException()
     {
         var service = _service;
-        var created = await service.CreateAsync(VentaValida());
+        var created = await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "  " }));
+            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "  " }, UsuarioPrueba, true));
     }
 
     [Fact]
@@ -263,7 +265,7 @@ public class VentasServiceTests : IDisposable
             }
         };
 
-        var result = await service.CreateAsync(dto);
+        var result = await service.CreateAsync(dto, UsuarioPrueba);
 
         Assert.Equal(2, result.Detalles.Count);
         Assert.Equal(50000m, result.Detalles[0].Subtotal);
@@ -275,11 +277,11 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVentas_SinFiltros_DevuelveTodas()
     {
         var service = _service;
-        await service.CreateAsync(VentaValida("Efectivo"));
-        await service.CreateAsync(VentaValida("Tarjeta"));
-        await service.CreateAsync(VentaValida("Transferencia"));
+        await service.CreateAsync(VentaValida("Efectivo"), UsuarioPrueba);
+        await service.CreateAsync(VentaValida("Tarjeta"), UsuarioPrueba);
+        await service.CreateAsync(VentaValida("Transferencia"), UsuarioPrueba);
 
-        var result = await service.GetAllAsync();
+        var result = await service.GetAllAsync(usuarioActual: UsuarioPrueba, esAdministrador: true);
 
         Assert.Equal(3, result.Count());
     }
@@ -288,15 +290,15 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVentas_FiltrandoPorEstado_DevuelveSoloEseEstado()
     {
         var service = _service;
-        var pendiente = await service.CreateAsync(VentaValida("Efectivo"));
-        var confirmada = await service.CreateAsync(VentaValida("Tarjeta"));
-        await service.ConfirmarAsync(confirmada.Id);
-        var anulada = await service.CreateAsync(VentaValida("Transferencia"));
-        await service.AnularAsync(anulada.Id, new AnularVentaDto { Motivo = "error de registro" });
+        var pendiente = await service.CreateAsync(VentaValida("Efectivo"), UsuarioPrueba);
+        var confirmada = await service.CreateAsync(VentaValida("Tarjeta"), UsuarioPrueba);
+        await service.ConfirmarAsync(confirmada.Id, UsuarioPrueba, true);
+        var anulada = await service.CreateAsync(VentaValida("Transferencia"), UsuarioPrueba);
+        await service.AnularAsync(anulada.Id, new AnularVentaDto { Motivo = "error de registro" }, UsuarioPrueba, true);
 
-        var pendientes = await service.GetAllAsync(estado: "Pendiente");
-        var confirmadas = await service.GetAllAsync(estado: "Confirmada");
-        var anuladas = await service.GetAllAsync(estado: "Anulada");
+        var pendientes = await service.GetAllAsync(estado: "Pendiente", usuarioActual: UsuarioPrueba, esAdministrador: true);
+        var confirmadas = await service.GetAllAsync(estado: "Confirmada", usuarioActual: UsuarioPrueba, esAdministrador: true);
+        var anuladas = await service.GetAllAsync(estado: "Anulada", usuarioActual: UsuarioPrueba, esAdministrador: true);
 
         Assert.Single(pendientes);
         Assert.Single(confirmadas);
@@ -313,19 +315,19 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVentas_EstadoInvalido_LanzaArgumentException(string estado)
     {
         var service = _service;
-        await service.CreateAsync(VentaValida());
+        await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetAllAsync(estado: estado));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetAllAsync(estado: estado, usuarioActual: UsuarioPrueba, esAdministrador: true));
     }
 
     [Fact]
     public async Task ObtenerVentas_EstadoVacio_SeTrataComoSinFiltro()
     {
         var service = _service;
-        await service.CreateAsync(VentaValida());
-        await service.CreateAsync(VentaValida());
+        await service.CreateAsync(VentaValida(), UsuarioPrueba);
+        await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
-        var result = await service.GetAllAsync(estado: "");
+        var result = await service.GetAllAsync(estado: "", usuarioActual: UsuarioPrueba, esAdministrador: true);
 
         Assert.Equal(2, result.Count());
     }
@@ -334,12 +336,12 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVentas_FiltrandoPorFecha_DevuelveVentasDelDia()
     {
         var service = _service;
-        var creada = await service.CreateAsync(VentaValida());
+        var creada = await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
         // El día calendario local del negocio (UTC-5); el filtro interpreta ?fecha=
         // como "día local" y lo convierte a un rango UTC.
         var hoyLocal = DateTime.UtcNow.AddHours(-5).Date;
-        var result = await service.GetAllAsync(fecha: hoyLocal);
+        var result = await service.GetAllAsync(fecha: hoyLocal, usuarioActual: UsuarioPrueba, esAdministrador: true);
 
         Assert.Contains(result, v => v.Id == creada.Id);
     }
@@ -348,9 +350,9 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVentas_FiltrandoPorFechaSinVentas_DevuelveVacio()
     {
         var service = _service;
-        await service.CreateAsync(VentaValida());
+        await service.CreateAsync(VentaValida(), UsuarioPrueba);
 
-        var result = await service.GetAllAsync(fecha: new DateTime(2020, 1, 1));
+        var result = await service.GetAllAsync(fecha: new DateTime(2020, 1, 1), usuarioActual: UsuarioPrueba, esAdministrador: true);
 
         Assert.Empty(result);
     }
@@ -359,12 +361,12 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerVentas_FiltroCombinadoEstadoYFecha_DevuelveCoincidencias()
     {
         var service = _service;
-        var confirmada = await service.CreateAsync(VentaValida("Efectivo"));
-        await service.ConfirmarAsync(confirmada.Id);
-        await service.CreateAsync(VentaValida("Tarjeta"));
+        var confirmada = await service.CreateAsync(VentaValida("Efectivo"), UsuarioPrueba);
+        await service.ConfirmarAsync(confirmada.Id, UsuarioPrueba, true);
+        await service.CreateAsync(VentaValida("Tarjeta"), UsuarioPrueba);
 
         var hoyLocal = DateTime.UtcNow.AddHours(-5).Date;
-        var result = await service.GetAllAsync(estado: "Confirmada", fecha: hoyLocal);
+        var result = await service.GetAllAsync(estado: "Confirmada", fecha: hoyLocal, usuarioActual: UsuarioPrueba, esAdministrador: true);
 
         Assert.Single(result);
         Assert.Equal(confirmada.Id, result.First().Id);
@@ -374,15 +376,15 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerResumen_ConVentasEnDistintosEstados_CalculaTotales()
     {
         var service = _service;
-        var c1 = await service.CreateAsync(VentaValida("Efectivo"));
-        await service.ConfirmarAsync(c1.Id);
-        var c2 = await service.CreateAsync(VentaValida(_varianteId, 3, 10000m, "Tarjeta"));
-        await service.ConfirmarAsync(c2.Id);
-        var a = await service.CreateAsync(VentaValida(_varianteId, 1, 99999m, "Transferencia"));
-        await service.AnularAsync(a.Id, new AnularVentaDto { Motivo = "error de registro" });
-        await service.CreateAsync(VentaValida("Efectivo"));
+        var c1 = await service.CreateAsync(VentaValida("Efectivo"), UsuarioPrueba);
+        await service.ConfirmarAsync(c1.Id, UsuarioPrueba, true);
+        var c2 = await service.CreateAsync(VentaValida(_varianteId, 3, 10000m, "Tarjeta"), UsuarioPrueba);
+        await service.ConfirmarAsync(c2.Id, UsuarioPrueba, true);
+        var a = await service.CreateAsync(VentaValida(_varianteId, 1, 99999m, "Transferencia"), UsuarioPrueba);
+        await service.AnularAsync(a.Id, new AnularVentaDto { Motivo = "error de registro" }, UsuarioPrueba, true);
+        await service.CreateAsync(VentaValida("Efectivo"), UsuarioPrueba);
 
-        var resumen = await service.GetResumenAsync();
+        var resumen = await service.GetResumenAsync(UsuarioPrueba, true);
 
         Assert.Equal(4, resumen.CantidadVentas);
         Assert.Equal(2, resumen.VentasConfirmadas);
@@ -394,12 +396,12 @@ public class VentasServiceTests : IDisposable
     public async Task ObtenerResumen_NoIncluyeVentasAnuladasEnTotalConfirmado()
     {
         var service = _service;
-        var confirmada = await service.CreateAsync(VentaValida("Efectivo"));
-        await service.ConfirmarAsync(confirmada.Id);
-        var anulada = await service.CreateAsync(VentaValida(_varianteId, 1, 99999m, "Tarjeta"));
-        await service.AnularAsync(anulada.Id, new AnularVentaDto { Motivo = "registro erroneo" });
+        var confirmada = await service.CreateAsync(VentaValida("Efectivo"), UsuarioPrueba);
+        await service.ConfirmarAsync(confirmada.Id, UsuarioPrueba, true);
+        var anulada = await service.CreateAsync(VentaValida(_varianteId, 1, 99999m, "Tarjeta"), UsuarioPrueba);
+        await service.AnularAsync(anulada.Id, new AnularVentaDto { Motivo = "registro erroneo" }, UsuarioPrueba, true);
 
-        var resumen = await service.GetResumenAsync();
+        var resumen = await service.GetResumenAsync(UsuarioPrueba, true);
 
         Assert.Equal(1, resumen.VentasAnuladas);
         Assert.Equal(50000m, resumen.TotalVentasConfirmadas);
@@ -415,9 +417,9 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(5);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
 
-        var result = await service.ConfirmarAsync(created.Id);
+        var result = await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
         Assert.Equal("Confirmada", result.Estado);
         Assert.Equal(3, (await _context.Variantes.FindAsync(varianteId))!.Stock);
@@ -428,7 +430,7 @@ public class VentasServiceTests : IDisposable
         Assert.Equal(-2, movimiento.Cantidad);
         Assert.Equal("venta", movimiento.ReferenciaTipo);
         Assert.Equal(created.Id, movimiento.ReferenciaId);
-        Assert.Equal("sistema", movimiento.Usuario);
+        Assert.Equal(UsuarioPrueba, movimiento.Usuario);
     }
 
     [Fact]
@@ -436,15 +438,15 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(1);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
 
-        var ex = await Assert.ThrowsAsync<StockInsuficienteException>(() => service.ConfirmarAsync(created.Id));
+        var ex = await Assert.ThrowsAsync<StockInsuficienteException>(() => service.ConfirmarAsync(created.Id, UsuarioPrueba, true));
 
         Assert.Equal(varianteId, ex.VarianteId);
         Assert.Equal(1, ex.Disponible);
         Assert.Equal(2, ex.Solicitado);
 
-        var obtenida = await service.GetByIdAsync(created.Id);
+        var obtenida = await service.GetByIdAsync(created.Id, UsuarioPrueba, true);
         Assert.NotNull(obtenida);
         Assert.Equal("Pendiente", obtenida.Estado);
         // Sin efecto colateral: la variante mantiene su stock, no hay movimientos ni factura.
@@ -468,9 +470,9 @@ public class VentasServiceTests : IDisposable
                 new() { VarianteId = v2, Cantidad = 2, PrecioUnitario = 20000m }
             }
         };
-        var created = await service.CreateAsync(dto);
+        var created = await service.CreateAsync(dto, UsuarioPrueba);
 
-        await Assert.ThrowsAsync<StockInsuficienteException>(() => service.ConfirmarAsync(created.Id));
+        await Assert.ThrowsAsync<StockInsuficienteException>(() => service.ConfirmarAsync(created.Id, UsuarioPrueba, true));
 
         // Requisito: no hay descuentos parciales. Ninguna variante cambió.
         Assert.Equal(10, (await _context.Variantes.FindAsync(v1))!.Stock);
@@ -490,7 +492,7 @@ public class VentasServiceTests : IDisposable
         const int varianteInexistente = 99999;
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            service.CreateAsync(VentaValida(varianteInexistente, 1, 25000m)));
+            service.CreateAsync(VentaValida(varianteInexistente, 1, 25000m), UsuarioPrueba));
 
         // La venta nunca se guardó, así que no hay nada que confirmar.
         Assert.Empty(await _context.Ventas.ToListAsync());
@@ -503,10 +505,10 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(5);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
-        await service.ConfirmarAsync(created.Id);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ConfirmarAsync(created.Id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ConfirmarAsync(created.Id, UsuarioPrueba, true));
 
         // Se descontó una sola vez: stock 5->3, un movimiento 'venta' y una factura.
         Assert.Equal(3, (await _context.Variantes.FindAsync(varianteId))!.Stock);
@@ -519,9 +521,9 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(10);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
 
-        await service.ConfirmarAsync(created.Id);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
         var factura = await _context.Facturas.FirstOrDefaultAsync(f => f.VentaId == created.Id);
         Assert.NotNull(factura);
@@ -537,9 +539,9 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(10);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
 
-        await service.ConfirmarAsync(created.Id);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
         // Un contexto nuevo sobre la misma base InMemory comprueba que la factura
         // quedó persistida y no solo en memoria del contexto de prueba.
@@ -568,14 +570,14 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(10);
-        var created = await service.CreateAsync(VentaValida(varianteId, 3, 25000m));
-        await service.ConfirmarAsync(created.Id);
+        var created = await service.CreateAsync(VentaValida(varianteId, 3, 25000m), UsuarioPrueba);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
         // Stock 10 -> 7 tras confirmar.
         Assert.Equal(7, (await _context.Variantes.FindAsync(varianteId))!.Stock);
 
-        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "Devolución del cliente" });
+        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "Devolución del cliente" }, UsuarioPrueba, true);
 
-        var obtenida = await service.GetByIdAsync(created.Id);
+        var obtenida = await service.GetByIdAsync(created.Id, UsuarioPrueba, true);
         Assert.Equal("Anulada", obtenida!.Estado);
         Assert.Equal("Devolución del cliente", obtenida.MotivoAnulacion);
         Assert.Equal(10, (await _context.Variantes.FindAsync(varianteId))!.Stock);
@@ -598,12 +600,12 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(5);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
-        await service.ConfirmarAsync(created.Id);
-        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "primer motivo" });
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
+        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "primer motivo" }, UsuarioPrueba, true);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "segundo motivo" }));
+            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "segundo motivo" }, UsuarioPrueba, true));
 
         // El stock se restauró una sola vez: 5 -> 3 (confirmar) -> 5 (anular).
         Assert.Equal(5, (await _context.Variantes.FindAsync(varianteId))!.Stock);
@@ -615,11 +617,11 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(7);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
 
-        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "venta no confirmada" });
+        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "venta no confirmada" }, UsuarioPrueba, true);
 
-        var obtenida = await service.GetByIdAsync(created.Id);
+        var obtenida = await service.GetByIdAsync(created.Id, UsuarioPrueba, true);
         Assert.Equal("Anulada", obtenida!.Estado);
         Assert.Equal(7, (await _context.Variantes.FindAsync(varianteId))!.Stock);
         Assert.Empty(await _context.MovimientosStock.ToListAsync());
@@ -630,9 +632,9 @@ public class VentasServiceTests : IDisposable
     {
         var service = _service;
         var varianteId = await CrearVarianteConStockAsync(10);
-        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m));
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), UsuarioPrueba);
 
-        await service.ConfirmarAsync(created.Id);
+        await service.ConfirmarAsync(created.Id, UsuarioPrueba, true);
 
         // Existe factura asociada a la venta
         var factura = await _context.Facturas.FirstOrDefaultAsync(f => f.VentaId == created.Id);
@@ -700,4 +702,221 @@ public class VentasServiceTests : IDisposable
         Assert.NotNull(fk.DependentToPrincipal);   // la navegación Variante existe
         Assert.Equal("Variante", fk.DependentToPrincipal!.Name);
     }
+    [Fact]
+    public async Task Ownership_CrearVenta_AsignaVendedorIdDesdeIdentidad()
+    {
+        var service = _service;
+        var created = await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        var venta = await _context.Ventas.FindAsync(created.Id);
+        Assert.NotNull(venta);
+        Assert.Equal("vendedor-1", venta!.VendedorId);
+    }
+
+    [Fact]
+    public async Task Ownership_Vendedor_ListadoSoloIncluyeSusVentas()
+    {
+        var service = _service;
+        var propia = await service.CreateAsync(VentaValida(), "vendedor-1");
+        await service.CreateAsync(VentaValida(), "vendedor-2");
+
+        var result = (await service.GetAllAsync(usuarioActual: "vendedor-1", esAdministrador: false)).ToList();
+
+        Assert.Single(result);
+        Assert.Equal(propia.Id, result[0].Id);
+    }
+
+    [Fact]
+    public async Task Ownership_Vendedor_ConsultaVentaPropia_DevuelveVenta()
+    {
+        var service = _service;
+        var created = await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        var result = await service.GetByIdAsync(created.Id, "vendedor-1", false);
+
+        Assert.NotNull(result);
+        Assert.Equal(created.Id, result!.Id);
+    }
+
+    [Fact]
+    public async Task Ownership_Vendedor_ConsultaVentaAjena_DevuelveNull()
+    {
+        var service = _service;
+        var created = await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        var result = await service.GetByIdAsync(created.Id, "vendedor-2", false);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task Ownership_OperacionSinIdentidad_LanzaArgumentException()
+    {
+        var service = _service;
+        var created = await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(VentaValida(), ""));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetAllAsync(usuarioActual: "", esAdministrador: false));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetByIdAsync(created.Id, "", false));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.ConfirmarAsync(created.Id, "", false));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo" }, "", false));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync("", true));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync(UsuarioPrueba, false));
+    }
+
+    [Fact]
+    public async Task Ownership_Vendedor_ConfirmaVentaAjena_NoModificaStock()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(10);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), "vendedor-1");
+        var stockInicial = (await _context.Variantes.FindAsync(varianteId))!.Stock;
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.ConfirmarAsync(created.Id, "vendedor-2", false));
+
+        Assert.Equal(stockInicial, (await _context.Variantes.FindAsync(varianteId))!.Stock);
+        Assert.Empty(await _context.MovimientosStock.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Ownership_Vendedor_AnulaVentaAjena_NoRestauraStock()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(10);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), "vendedor-1");
+        await service.ConfirmarAsync(created.Id, "vendedor-1", true);
+
+        var movimientosAntes = await _context.MovimientosStock.CountAsync();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo" }, "vendedor-2", false));
+
+        Assert.Equal(movimientosAntes, await _context.MovimientosStock.CountAsync());
+    }
+
+    [Fact]
+    public async Task Ownership_Administrador_PuedeOperarVentaSinPropietario()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(10);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), "admin");
+
+        var venta = await _context.Ventas.FindAsync(created.Id);
+        Assert.NotNull(venta);
+        venta!.VendedorId = null;
+        await _context.SaveChangesAsync();
+
+        var obtenida = await service.GetByIdAsync(created.Id, "admin", true);
+        Assert.NotNull(obtenida);
+
+        var confirmada = await service.ConfirmarAsync(created.Id, "admin", true);
+        Assert.Equal("Confirmada", confirmada.Estado);
+
+        var anulada = await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo admin" }, "admin", true);
+        Assert.Equal("Anulada", anulada.Estado);
+    }
+
+    [Fact]
+    public async Task Ownership_Confirmar_RegistraIdentidadEnMovimiento()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(5);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), "vendedor-identidad");
+
+        await service.ConfirmarAsync(created.Id, "vendedor-identidad", true);
+
+        var movimiento = await _context.MovimientosStock.SingleAsync();
+        Assert.Equal("vendedor-identidad", movimiento.Usuario);
+    }
+
+    [Fact]
+    public async Task Ownership_Vendedor_NoVeVentasAntiguasSinPropietario()
+    {
+        var service = _service;
+        var creada = await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        var venta = await _context.Ventas.FindAsync(creada.Id);
+        Assert.NotNull(venta);
+        venta!.VendedorId = null;
+        await _context.SaveChangesAsync();
+
+        var resultado = (await service.GetAllAsync(usuarioActual: "vendedor-1", esAdministrador: false)).ToList();
+        Assert.Empty(resultado);
+    }
+    [Fact]
+    public async Task Ownership_Administrador_GetAll_IncluyeVentasDeDistintosPropietariosYLegacy()
+    {
+        var service = _service;
+        await service.CreateAsync(VentaValida(), "vendedor-1");
+        await service.CreateAsync(VentaValida(), "vendedor-2");
+        var propiaAdmin = await service.CreateAsync(VentaValida(), "admin");
+
+        var ventaLegacy = await _context.Ventas.FindAsync(propiaAdmin.Id);
+        Assert.NotNull(ventaLegacy);
+        ventaLegacy!.VendedorId = null;
+        await _context.SaveChangesAsync();
+
+        var result = (await service.GetAllAsync(usuarioActual: "admin", esAdministrador: true)).ToList();
+
+        Assert.Equal(3, result.Count);
+    }
+
+    [Fact]
+    public async Task Ownership_GetResumen_RequiereIdentidadAdministrativa()
+    {
+        var service = _service;
+        await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        var resumen = await service.GetResumenAsync(UsuarioPrueba, true);
+        Assert.NotNull(resumen);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync("", true));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync(UsuarioPrueba, false));
+    }
+
+    [Fact]
+    public async Task Ownership_Anular_RegistraIdentidadEnMovimiento()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(5);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), "vendedor-anulacion");
+        await service.ConfirmarAsync(created.Id, "vendedor-anulacion", true);
+
+        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo anulacion" }, "vendedor-anulacion", true);
+
+        var movimiento = await _context.MovimientosStock.SingleAsync(m => m.Tipo == "anulacion_venta");
+        Assert.Equal("vendedor-anulacion", movimiento.Usuario);
+    }
+
+    [Fact]
+    public async Task Ownership_AnulacionDenegada_NoRestauraStockNiGeneraMovimiento()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(10);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), "vendedor-1");
+        await service.ConfirmarAsync(created.Id, "vendedor-1", true);
+
+        var stockConfirmado = (await _context.Variantes.FindAsync(varianteId))!.Stock;
+        var movimientosAntes = await _context.MovimientosStock.CountAsync();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo" }, "vendedor-2", false));
+
+        Assert.Equal(stockConfirmado, (await _context.Variantes.FindAsync(varianteId))!.Stock);
+        Assert.Equal(movimientosAntes, await _context.MovimientosStock.CountAsync());
+    }
+
+    [Fact]
+    public async Task Ownership_Administrador_SinIdentidad_NoPuedeConsultarVentas()
+    {
+        var service = _service;
+        await service.CreateAsync(VentaValida(), "vendedor-1");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetAllAsync(usuarioActual: "", esAdministrador: true));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetByIdAsync(1, "", true));
+    }
 }
+
+
+
+

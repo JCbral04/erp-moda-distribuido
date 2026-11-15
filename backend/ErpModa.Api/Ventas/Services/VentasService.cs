@@ -27,11 +27,21 @@ namespace ErpModa.Api.Ventas.Services
             _context = context ?? throw new ArgumentNullException(nameof(context));
         }
 
-        public async Task<IEnumerable<VentaResponseDto>> GetAllAsync(string? estado = null, DateTime? fecha = null)
+        public async Task<IEnumerable<VentaResponseDto>> GetAllAsync(
+            string? estado = null,
+            DateTime? fecha = null,
+            string? usuarioActual = null,
+            bool esAdministrador = false)
         {
+            if (string.IsNullOrWhiteSpace(usuarioActual))
+                throw new ArgumentException("El usuario autenticado es obligatorio.");
+
             var estadoFiltro = ParseEstadoFiltro(estado);
 
             var query = _context.Ventas.Include(v => v.Detalles).AsQueryable();
+
+            if (!esAdministrador && !string.IsNullOrWhiteSpace(usuarioActual))
+                query = query.Where(v => v.VendedorId == usuarioActual);
 
             if (estadoFiltro.HasValue)
                 query = query.Where(v => v.EstadoStr == estadoFiltro.Value.ToString());
@@ -46,8 +56,13 @@ namespace ErpModa.Api.Ventas.Services
             return ventas.Select(MapToResponse);
         }
 
-        public async Task<VentasResumenDto> GetResumenAsync()
+        public async Task<VentasResumenDto> GetResumenAsync(
+            string? usuarioActual = null,
+            bool esAdministrador = false)
         {
+            if (string.IsNullOrWhiteSpace(usuarioActual) || !esAdministrador)
+                throw new ArgumentException("Se requiere un usuario administrador autenticado.");
+
             var confirmadasQuery = _context.Ventas
                 .Where(v => v.EstadoStr == EstadoVenta.Confirmada.ToString());
 
@@ -69,17 +84,34 @@ namespace ErpModa.Api.Ventas.Services
             };
         }
 
-        public async Task<VentaResponseDto?> GetByIdAsync(int id)
+        public async Task<VentaResponseDto?> GetByIdAsync(
+            int id,
+            string? usuarioActual = null,
+            bool esAdministrador = false)
         {
+            if (string.IsNullOrWhiteSpace(usuarioActual))
+                throw new ArgumentException("El usuario autenticado es obligatorio.");
+
             var venta = await _context.Ventas
                 .Include(v => v.Detalles)
                 .FirstOrDefaultAsync(v => v.Id == id);
 
-            return venta != null ? MapToResponse(venta) : null;
+            if (venta == null)
+                return null;
+
+            if (!esAdministrador && venta.VendedorId != usuarioActual)
+                return null;
+
+            return MapToResponse(venta);
         }
 
-        public async Task<VentaResponseDto> CreateAsync(CrearVentaDto crearDto)
+        public async Task<VentaResponseDto> CreateAsync(
+            CrearVentaDto crearDto,
+            string? usuarioActual = null)
         {
+            if (string.IsNullOrWhiteSpace(usuarioActual))
+                throw new ArgumentException("El usuario autenticado es obligatorio.");
+
             var metodoPago = ParseMetodoPago(crearDto.MetodoPago);
 
             if (crearDto.Detalles == null || !crearDto.Detalles.Any())
@@ -130,6 +162,7 @@ namespace ErpModa.Api.Ventas.Services
                 MetodoPago = metodoPago,
                 Estado = EstadoVenta.Pendiente,
                 Detalles = detalleEntidades,
+                VendedorId = usuarioActual,
                 CreadoEn = DateTime.UtcNow,
                 ActualizadoEn = DateTime.UtcNow
             };
@@ -140,7 +173,10 @@ namespace ErpModa.Api.Ventas.Services
             return MapToResponse(venta);
         }
 
-        public async Task<VentaResponseDto> ConfirmarAsync(int id)
+        public async Task<VentaResponseDto> ConfirmarAsync(
+            int id,
+            string? usuarioActual = null,
+            bool esAdministrador = false)
         {
             // La carga de la venta y la validación de estado se ejecutan DENTRO de la
             // transacción para que la decisión se tome en el mismo ámbito transaccional
@@ -148,10 +184,18 @@ namespace ErpModa.Api.Ventas.Services
             // venta podría ser confirmada dos veces por hilos concurrentes que leyeran
             // el estado "Pendiente" antes de que cualquiera de ellos empezara la
             // transacción (docs/contratos/ventas-inventario.md, sección 6, opción b).
+            if (string.IsNullOrWhiteSpace(usuarioActual))
+                throw new ArgumentException("El usuario autenticado es obligatorio.");
+
             Venta? venta = null;
             await EjecutarAtomicoAsync(async () =>
             {
-                venta = await GetVentaOrThrowAsync(id);
+                venta = await _context.Ventas
+                    .Include(v => v.Detalles)
+                    .FirstOrDefaultAsync(v => v.Id == id);
+
+                if (venta == null || (!esAdministrador && venta.VendedorId != usuarioActual))
+                    throw new KeyNotFoundException($"No existe la venta con id {id}.");
 
                 if (venta.Estado != EstadoVenta.Pendiente)
                     throw new InvalidOperationException(
@@ -160,7 +204,7 @@ namespace ErpModa.Api.Ventas.Services
                 // Contrato Ventas→Inventario: valida Y descuenta el stock ANTES de
                 // confirmar (sin descuentos parciales: se validan todas las líneas
                 // primero). movimiento tipo='venta', cantidad<0 (docs/inventario/schema.sql).
-                await AplicarDescuentoStockAsync(venta);
+                await AplicarDescuentoStockAsync(venta, usuarioActual);
 
                 venta.Estado = EstadoVenta.Confirmada;
                 venta.ActualizadoEn = DateTime.UtcNow;
@@ -184,13 +228,20 @@ namespace ErpModa.Api.Ventas.Services
             return MapToResponse(venta!);
         }
 
-        public async Task<VentaResponseDto> AnularAsync(int id, AnularVentaDto anularDto)
+        public async Task<VentaResponseDto> AnularAsync(
+            int id,
+            AnularVentaDto anularDto,
+            string? usuarioActual = null,
+            bool esAdministrador = false)
         {
             // La validación del motivo no depende del estado en BD y se mantiene
             // fuera de la transacción. La carga de la venta y la comprobación de
             // "ya anulada" van DENTRO de la transacción, con el mismo patrón de
             // ConfirmarAsync: dos anulaciones concurrentes no pueden restaurar el
             // stock dos veces porque la segunda ve la venta ya Anulada y lanza.
+            if (string.IsNullOrWhiteSpace(usuarioActual))
+                throw new ArgumentException("El usuario autenticado es obligatorio.");
+
             if (anularDto == null || string.IsNullOrWhiteSpace(anularDto.Motivo))
                 throw new ArgumentException("El motivo de anulación es obligatorio.");
 
@@ -202,7 +253,12 @@ namespace ErpModa.Api.Ventas.Services
             Venta? venta = null;
             await EjecutarAtomicoAsync(async () =>
             {
-                venta = await GetVentaOrThrowAsync(id);
+                venta = await _context.Ventas
+                    .Include(v => v.Detalles)
+                    .FirstOrDefaultAsync(v => v.Id == id);
+
+                if (venta == null || (!esAdministrador && venta.VendedorId != usuarioActual))
+                    throw new KeyNotFoundException($"No existe la venta con id {id}.");
 
                 if (venta.Estado == EstadoVenta.Anulada)
                     throw new InvalidOperationException(
@@ -211,7 +267,7 @@ namespace ErpModa.Api.Ventas.Services
                 // Solo una venta Confirmada descontó stock; una venta Pendiente nunca
                 // lo descontó y por eso no restaura (movimiento tipo='anulacion_venta').
                 if (venta.Estado == EstadoVenta.Confirmada)
-                    await RestaurarStockAsync(venta, motivo);
+                    await RestaurarStockAsync(venta, motivo, usuarioActual);
 
                 // La venta no se elimina: pasa a Anulada y conserva el motivo (RN-005 ventas.md).
                 venta.Estado = EstadoVenta.Anulada;
@@ -231,14 +287,7 @@ namespace ErpModa.Api.Ventas.Services
             return MapToResponse(venta!);
         }
 
-        private async Task<Venta> GetVentaOrThrowAsync(int id)
-        {
-            var venta = await _context.Ventas
-                .Include(v => v.Detalles)
-                .FirstOrDefaultAsync(v => v.Id == id);
 
-            return venta ?? throw new KeyNotFoundException($"No existe la venta con id {id}.");
-        }
 
         // ── Integración Ventas→Inventario (docs/contratos/ventas-inventario.md) ──
 
@@ -264,7 +313,7 @@ namespace ErpModa.Api.Ventas.Services
         // de validar TODAS las líneas, aplica el descuento y registra los movimientos
         // de salida (tipo='venta', cantidad<0). Si algo falla, no se produce ningún
         // descuento parcial: la confirmación lanza y la venta permanece Pendiente.
-        private async Task AplicarDescuentoStockAsync(Venta venta)
+        private async Task AplicarDescuentoStockAsync(Venta venta, string usuarioActual)
         {
             var variantesPorId = await ObtenerVariantesDeLaVentaAsync(venta);
 
@@ -292,7 +341,7 @@ namespace ErpModa.Api.Ventas.Services
                     ReferenciaTipo = "venta",
                     ReferenciaId = venta.Id,
                     Motivo = null,
-                    Usuario = "sistema",
+                    Usuario = usuarioActual,
                     Confianza = null,
                     CreadoEn = DateTime.UtcNow
                 });
@@ -302,7 +351,7 @@ namespace ErpModa.Api.Ventas.Services
         // Restaura las cantidades de una venta Confirmada a su inventario y registra
         // un movimiento de entrada (tipo='anulacion_venta', cantidad>0) por variante.
         // El motivo de anulación es obligatorio para este tipo (docs/inventario/schema.sql).
-        private async Task RestaurarStockAsync(Venta venta, string motivo)
+        private async Task RestaurarStockAsync(Venta venta, string motivo, string usuarioActual)
         {
             var variantesPorId = await ObtenerVariantesDeLaVentaAsync(venta);
 
@@ -323,7 +372,7 @@ namespace ErpModa.Api.Ventas.Services
                     ReferenciaTipo = "venta",
                     ReferenciaId = venta.Id,
                     Motivo = motivo,
-                    Usuario = "sistema",
+                    Usuario = usuarioActual,
                     Confianza = null,
                     CreadoEn = DateTime.UtcNow
                 });

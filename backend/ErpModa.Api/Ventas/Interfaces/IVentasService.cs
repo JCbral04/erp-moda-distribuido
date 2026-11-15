@@ -7,11 +7,27 @@ namespace ErpModa.Api.Ventas.Interfaces
 {
     public interface IVentasService
     {
-        Task<IEnumerable<VentaResponseDto>> GetAllAsync(string? estado = null, DateTime? fecha = null);
-        Task<VentasResumenDto> GetResumenAsync();
-        Task<VentaResponseDto?> GetByIdAsync(int id);
-        Task<VentaResponseDto> CreateAsync(CrearVentaDto crearDto);
-        Task<VentaResponseDto> ConfirmarAsync(int id);
-        Task<VentaResponseDto> AnularAsync(int id, AnularVentaDto anularDto);
+        Task<IEnumerable<VentaResponseDto>> GetAllAsync(
+            string? estado = null,
+            DateTime? fecha = null,
+            string? usuarioActual = null,
+            bool esAdministrador = false);
+        Task<VentasResumenDto> GetResumenAsync(
+            string? usuarioActual = null,
+            bool esAdministrador = false);
+        Task<VentaResponseDto?> GetByIdAsync(
+            int id,
+            string? usuarioActual = null,
+            bool esAdministrador = false);
+        Task<VentaResponseDto> CreateAsync(CrearVentaDto crearDto, string? usuarioActual = null);
+        Task<VentaResponseDto> ConfirmarAsync(
+            int id,
+            string? usuarioActual = null,
+            bool esAdministrador = false);
+        Task<VentaResponseDto> AnularAsync(
+            int id,
+            AnularVentaDto anularDto,
+            string? usuarioActual = null,
+            bool esAdministrador = false);
     }
 }

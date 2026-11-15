@@ -150,6 +150,19 @@ namespace ErpModa.Api.Data
                 .Property(d => d.Subtotal)
                 .HasPrecision(12, 2);
 
+            // Relaciones Proveedores y Ordenes de Compra
+            modelBuilder.Entity<OrdenCompra>()
+                .HasOne<Proveedor>()
+                .WithMany()
+                .HasForeignKey(o => o.ProveedorId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<OrdenCompra>()
+                .HasMany(o => o.Detalles)
+                .WithOne()
+                .HasForeignKey(d => d.OrdenCompraId)
+                .OnDelete(DeleteBehavior.Cascade);
+
             // Configurar Version como token de concurrencia optimista para PostgreSQL
             modelBuilder.Entity<Proveedor>()
                 .Property(p => p.Version)

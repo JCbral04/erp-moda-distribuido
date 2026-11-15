@@ -10,6 +10,20 @@ jobs:
   backend:
     name: Backend .NET
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Clonar el repo
         uses: actions/checkout@v7
@@ -26,6 +40,8 @@ jobs:
         run: dotnet build backend/ErpModa.sln --configuration Release --no-restore
 
       - name: Ejecutar tests
+        env:
+          PostgreSqlConnection__String: "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres"
         run: dotnet test backend/ErpModa.sln --configuration Release --no-build --no-restore --verbosity normal
 
   ia:

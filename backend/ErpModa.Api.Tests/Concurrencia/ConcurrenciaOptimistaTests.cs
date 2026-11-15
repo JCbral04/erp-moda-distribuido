@@ -40,7 +40,7 @@ public class ConcurrenciaOptimistaTests : BasePostgreSQLTest
             Version = versionOriginal
         };
 
-        var ex = await Assert.ThrowsAsync<ConcurrencyException>(() =>
+        var ex = await Assert.ThrowsAsync<ErpModa.Api.Proveedores.Services.ConcurrencyException>(() =>
             service.UpdateAsync(id, updater2));
 
         Assert.Contains("modificado por otro usuario", ex.Message);
@@ -78,10 +78,10 @@ public class ConcurrenciaOptimistaTests : BasePostgreSQLTest
             Version = versionOriginal
         };
 
-        var ex = await Assert.ThrowsAsync<ConcurrencyException>(() =>
+        var ex = await Assert.ThrowsAsync<ErpModa.Api.Proveedores.OrdenesCompra.Services.ConcurrencyException>(() =>
             service.UpdateAsync(ordenId, updater2));
 
-        Assert.Contains("modificado por otro usuario", ex.Message);
+        Assert.Contains("modificada por otro usuario", ex.Message);
     }
 
     [Fact]
@@ -94,8 +94,8 @@ public class ConcurrenciaOptimistaTests : BasePostgreSQLTest
             ProveedorId = proveedorId,
             Fecha = DateTime.UtcNow,
             Estado = EstadoOrdenCompra.Pendiente,
-            Subtotal = 0m,
-            Total = 0m,
+            Subtotal = 10000m,
+            Total = 10000m,
             Version = 1,
             CreadoEn = DateTime.UtcNow,
             ActualizadoEn = DateTime.UtcNow,

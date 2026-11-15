@@ -750,17 +750,23 @@ public class VentasServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Ownership_OperacionSinIdentidad_LanzaArgumentException()
+    public async Task Ownership_OperacionSinIdentidad_PermiteCompatibilidad()
     {
         var service = _service;
         var created = await service.CreateAsync(VentaValida(), "vendedor-1");
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync(VentaValida(), ""));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetAllAsync(usuarioActual: "", esAdministrador: false));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetByIdAsync(created.Id, "", false));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.ConfirmarAsync(created.Id, "", false));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo" }, "", false));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync("", true));
+        var createdSinIdentidad = await service.CreateAsync(VentaValida(), "");
+        Assert.Null((await _context.Ventas.FindAsync(createdSinIdentidad.Id))!.VendedorId);
+
+        await service.GetAllAsync(usuarioActual: "", esAdministrador: false);
+        Assert.NotNull(await service.GetByIdAsync(created.Id, "", false));
+
+        await service.ConfirmarAsync(created.Id, "", false);
+        await service.AnularAsync(created.Id, new AnularVentaDto { Motivo = "motivo" }, "", false);
+
+        var resumen = await service.GetResumenAsync("", true);
+        Assert.NotNull(resumen);
+
         await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync(UsuarioPrueba, false));
     }
 
@@ -867,10 +873,9 @@ public class VentasServiceTests : IDisposable
         var service = _service;
         await service.CreateAsync(VentaValida(), "vendedor-1");
 
-        var resumen = await service.GetResumenAsync(UsuarioPrueba, true);
-        Assert.NotNull(resumen);
+        var resumenSinIdentidad = await service.GetResumenAsync("", true);
+        Assert.NotNull(resumenSinIdentidad);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync("", true));
         await Assert.ThrowsAsync<ArgumentException>(() => service.GetResumenAsync(UsuarioPrueba, false));
     }
 
@@ -907,13 +912,40 @@ public class VentasServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Ownership_Administrador_SinIdentidad_NoPuedeConsultarVentas()
+    public async Task Compatibilidad_SinIdentidad_CreaVentaConVendedorIdNull()
+    {
+        var service = _service;
+
+        var created = await service.CreateAsync(VentaValida(), null);
+
+        var venta = await _context.Ventas.FindAsync(created.Id);
+        Assert.NotNull(venta);
+        Assert.Null(venta!.VendedorId);
+    }
+
+    [Fact]
+    public async Task Compatibilidad_SinIdentidad_ListadoNoAplicaFiltroDePropiedad()
     {
         var service = _service;
         await service.CreateAsync(VentaValida(), "vendedor-1");
+        await service.CreateAsync(VentaValida(), "vendedor-2");
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetAllAsync(usuarioActual: "", esAdministrador: true));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.GetByIdAsync(1, "", true));
+        var todas = (await service.GetAllAsync(usuarioActual: null, esAdministrador: false)).ToList();
+
+        Assert.Equal(2, todas.Count);
+    }
+
+    [Fact]
+    public async Task Compatibilidad_ConfirmarSinIdentidad_RegistraMovimientoConSistema()
+    {
+        var service = _service;
+        var varianteId = await CrearVarianteConStockAsync(5);
+        var created = await service.CreateAsync(VentaValida(varianteId, 2, 25000m), null);
+
+        await service.ConfirmarAsync(created.Id, null, false);
+
+        var movimiento = await _context.MovimientosStock.SingleAsync();
+        Assert.Equal("sistema", movimiento.Usuario);
     }
 }
 

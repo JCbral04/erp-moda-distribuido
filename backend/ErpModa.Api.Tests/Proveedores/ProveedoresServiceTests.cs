@@ -10,6 +10,7 @@ using ErpModa.Api.Proveedores.OrdenesCompra.Services;
 
 namespace ErpModa.Api.Tests;
 
+[Trait("Category", "Integration")]
 public class ProveedoresServiceTests : BasePostgreSQLTest
 {
     private readonly IProveedoresService _service;
@@ -31,7 +32,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         TiempoEntrega = 7
     };
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearProveedor_DatosValidos_CreaProveedorActivo()
     {
         var result = await _service.CreateAsync(DtoValido());
@@ -45,7 +46,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Equal(1, result.Version);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearProveedor_DtoInvalido_LanzaArgumentException()
     {
         var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -54,7 +55,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Contains("obligatoria", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearProveedor_NitDuplicado_LanzaArgumentException()
     {
         await CreateTestProveedorAsync("901234567-5");
@@ -65,7 +66,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Contains("Ya existe un proveedor con el NIT", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ObtenerProveedor_PorId_DevuelveProveedorCreado()
     {
         var id = await CreateTestProveedorAsync();
@@ -76,14 +77,14 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Equal("Test Proveedor", result.RazonSocial);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ObtenerProveedor_IdInexistente_DevuelveNull()
     {
         var result = await _service.GetByIdAsync(999);
         Assert.Null(result);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ListarProveedores_DevuelveTodosRegistrados()
     {
         await CreateTestProveedorAsync("111111111-1");
@@ -93,7 +94,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Equal(2, result.Count);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ActualizarProveedor_Existente_ActualizaCampos()
     {
         var id = await CreateTestProveedorAsync();
@@ -114,7 +115,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Equal(1, updated.Version);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ActualizarProveedor_VersionIncorrecta_LanzaExcepcion()
     {
         var id = await CreateTestProveedorAsync();
@@ -131,14 +132,14 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Contains("modificado por otro usuario", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ActualizarProveedor_Inexistente_DevuelveNull()
     {
         var result = await _service.UpdateAsync(999, new ActualizarProveedorDto { RazonSocial = "X" });
         Assert.Null(result);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task EliminarProveedor_Existente_DevuelveTrue()
     {
         var id = await CreateTestProveedorAsync();
@@ -148,7 +149,7 @@ public class ProveedoresServiceTests : BasePostgreSQLTest
         Assert.Null(await _service.GetByIdAsync(id));
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task EliminarProveedor_Inexistente_DevuelveFalse()
     {
         var deleted = await _service.DeleteAsync(999);

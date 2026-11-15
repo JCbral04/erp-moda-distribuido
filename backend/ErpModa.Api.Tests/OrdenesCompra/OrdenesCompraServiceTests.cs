@@ -8,6 +8,7 @@ using ErpModa.Api.Proveedores.OrdenesCompra.Services;
 
 namespace ErpModa.Api.Tests;
 
+[Trait("Category", "Integration")]
 public class OrdenesCompraServiceTests : BasePostgreSQLTest
 {
     private readonly IOrdenesCompraService _service;
@@ -55,7 +56,7 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
         }
     };
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearOrdenCompra_ProveedorValido_CreaOrdenConTotales()
     {
         var proveedorId = await CrearProveedorActivoAsync();
@@ -74,7 +75,7 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
         Assert.Equal(1, result.Version);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearOrdenCompra_ProveedorInexistente_LanzaArgumentException()
     {
         var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -83,7 +84,7 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
         Assert.Contains("no existe", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearOrdenCompra_ProveedorInactivo_LanzaArgumentException()
     {
         var proveedorId = await CrearProveedorInactivoAsync();
@@ -93,7 +94,7 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
         Assert.Contains("inactivo", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearOrdenCompra_SinDetalles_LanzaArgumentException()
     {
         var proveedorId = await CrearProveedorActivoAsync();
@@ -106,7 +107,7 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
         Assert.Contains("al menos un producto", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ObtenerOrden_PorId_DevuelveOrdenConDetalles()
     {
         var proveedorId = await CrearProveedorActivoAsync();
@@ -119,14 +120,14 @@ public class OrdenesCompraServiceTests : BasePostgreSQLTest
         Assert.Equal(2, result.Detalles.Count);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ObtenerOrden_IdInexistente_DevuelveNull()
     {
         var result = await _service.GetByIdAsync(999);
         Assert.Null(result);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ListarOrdenes_DevuelveTodas()
     {
         var proveedorId = await CrearProveedorActivoAsync();

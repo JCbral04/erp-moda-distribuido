@@ -9,9 +9,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ErpModa.Api.Tests;
 
+[Trait("Category", "Integration")]
 public class ConcurrenciaOptimistaTests : BasePostgreSQLTest
 {
-    [Fact]
+    [IntegrationFact]
     public async Task DosActualizacionesConMismaVersion_DebeLanzarConflicto()
     {
         // Paso 1: Crear proveedor
@@ -46,7 +47,7 @@ public class ConcurrenciaOptimistaTests : BasePostgreSQLTest
         Assert.Contains("modificado por otro usuario", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task ActualizarOrden_VersionIncorrecta_LanzaConflicto()
     {
         // Paso 1: Crear proveedor y orden
@@ -84,7 +85,7 @@ public class ConcurrenciaOptimistaTests : BasePostgreSQLTest
         Assert.Contains("modificada por otro usuario", ex.Message);
     }
 
-    [Fact]
+    [IntegrationFact]
     public async Task CrearOrdenConVersionInicialCorrecta()
     {
         var proveedorId = await CreateTestProveedorAsync("333333333-3");

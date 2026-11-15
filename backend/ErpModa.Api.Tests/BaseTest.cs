@@ -2,23 +2,16 @@ using ErpModa.Api.Data;
 using ErpModa.Api.Proveedores.Interfaces;
 using ErpModa.Api.Proveedores.OrdenesCompra.Interfaces;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
+using Xunit.Sdk;
 
 namespace ErpModa.Api.Tests;
 
 /// <summary>
-/// Excepción lanzada cuando hay un conflicto de concurrencia optimista.
-/// </summary>
-public class ConcurrencyException : Exception
-{
-    public ConcurrencyException(string message) : base(message) { }
-}
-
-/// <summary>
 /// Clase base para pruebas que usan PostgreSQL real (no InMemory).
 /// Cada instancia (es decir, cada prueba) crea una base de datos temporal
-/// independiente, aplica todas las migraciones de EF Core y la elimina al finalizar.
+/// independiente, crea el esquema a partir del modelo actual de EF Core y la
+/// elimina al finalizar. No depende de archivos de migración ni de ModelSnapshot.
 /// </summary>
 public abstract class BasePostgreSQLTest : IDisposable
 {
@@ -27,9 +20,6 @@ public abstract class BasePostgreSQLTest : IDisposable
 
     /// <summary>Base de datos de mantenimiento sobre la que se ejecutan CREATE/DROP DATABASE.</summary>
     private const string MaintenanceDatabase = "postgres";
-
-    /// <summary>Ensamblado que contiene las migraciones de EF Core.</summary>
-    private const string MigrationsAssembly = "ErpModa.Api";
 
     /// <summary>
     /// Prefijo de las bases temporales. Solo minúsculas, dígitos y guion bajo,
@@ -51,7 +41,7 @@ public abstract class BasePostgreSQLTest : IDisposable
     {
         _dbName = $"{DatabaseNamePrefix}{Guid.NewGuid():N}";
 
-        var connectionString = System.Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new InvalidOperationException($"No se encontró la variable de entorno '{ConnectionEnvironmentVariable}'. Configurela para ejecutar pruebas con PostgreSQL.");
 
@@ -66,27 +56,30 @@ public abstract class BasePostgreSQLTest : IDisposable
             _databaseCreated = true;
 
             var options = new DbContextOptionsBuilder<ErpModaDbContext>()
-                .UseNpgsql(testConnectionString, o => o.MigrationsAssembly(MigrationsAssembly))
+                .UseNpgsql(testConnectionString)
                 .Options;
 
             context = new ErpModaDbContext(options);
-            context.Database.Migrate();
+            context.Database.EnsureCreated();
         }
-        catch
+        catch (Exception ex)
         {
+            _ = ex;
+
             try
             {
                 context?.Dispose();
             }
-            catch
+            catch (Exception cleanupException)
             {
+                _ = cleanupException;
             }
 
             DeleteDatabaseQuietly();
             throw;
         }
 
-        _context = context;
+        _context = context!;
     }
 
     public virtual void Dispose()
@@ -100,8 +93,9 @@ public abstract class BasePostgreSQLTest : IDisposable
         {
             _context?.Dispose();
         }
-        catch
+        catch (Exception disposeException)
         {
+            _ = disposeException;
         }
 
         DeleteDatabaseQuietly();
@@ -163,8 +157,9 @@ public abstract class BasePostgreSQLTest : IDisposable
         {
             DeleteDatabase();
         }
-        catch
+        catch (Exception deleteException)
         {
+            _ = deleteException;
         }
     }
 
@@ -232,5 +227,33 @@ public abstract class BasePostgreSQLTest : IDisposable
     protected async Task<ErpModa.Api.Proveedores.Models.Proveedor> GetProveedorAsync(int id)
     {
         return await _context.Proveedores.FindAsync(id);
+    }
+}
+
+/// <summary>
+/// Atributo de prueba de integración para xUnit 2.9.3. Omite la prueba cuando
+/// falta la variable de entorno PostgreSqlConnection__String y la marca con
+/// el Trait Category=Integration para permitir filtrado en CI.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class IntegrationFactAttribute : FactAttribute
+{
+    public IntegrationFactAttribute()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PostgreSqlConnection__String")))
+            Skip = "Omitida: falta la variable de entorno 'PostgreSqlConnection__String' (prueba de integración con PostgreSQL).";
+    }
+}
+
+/// <summary>
+/// Equivalente de <see cref="TheoryAttribute"/> para pruebas de integración.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class IntegrationTheoryAttribute : TheoryAttribute
+{
+    public IntegrationTheoryAttribute()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PostgreSqlConnection__String")))
+            Skip = "Omitida: falta la variable de entorno 'PostgreSqlConnection__String' (prueba de integración con PostgreSQL).";
     }
 }

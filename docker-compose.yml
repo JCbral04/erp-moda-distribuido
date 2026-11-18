@@ -7,8 +7,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-erpuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-erp_moda}
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -23,8 +21,6 @@ services:
     image: redis:7-alpine
     container_name: erp-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     networks:
       - erp-net
     healthcheck:
@@ -40,12 +36,10 @@ services:
     container_name: erp-backend
     restart: unless-stopped
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=${POSTGRES_DB:-erp_moda};Username=${POSTGRES_USER:-erpuser};Password=${POSTGRES_PASSWORD}"
       Redis__ConnectionString: redis:6379
       IaService__BaseUrl: http://ia:8000
-    ports:
-      - "5000:8080"
     depends_on:
       db:
         condition: service_healthy
@@ -54,17 +48,17 @@ services:
     networks:
       - erp-net
 
+
   ia:
     build: ./ai
     container_name: erp-ia
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     networks:
       - erp-net
 
 volumes:
   pgdata:
+
 
 networks:
   erp-net:

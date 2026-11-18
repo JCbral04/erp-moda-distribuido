@@ -33,6 +33,7 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
         run: |
           # Nunca publicar un backup plano: el .gpg debe existir y validar.
+          test -n "${GPG_PASSPHRASE:-}" || { echo "ERROR: passphrase de backup ausente"; exit 1; }
           test -f backup.sql.gz.gpg || { echo "ERROR: backup cifrado ausente"; exit 1; }
           test ! -f backup.sql.gz || { echo "ERROR: backup plano presente, abortando"; exit 1; }
           printf '%s' "$GPG_PASSPHRASE" | gpg --batch --decrypt --passphrase-fd 0 -o /dev/null backup.sql.gz.gpg \
@@ -42,4 +43,5 @@ jobs:
         with:
           name: backup-${{ github.run_id }}
           path: backup.sql.gz.gpg
+          if-no-files-found: error
           retention-days: 30

@@ -1,4 +1,4 @@
-import { ApiError } from './errors';
+import { ApiError, parseErrorBody } from './errors';
 
 export { ApiError } from './errors';
 
@@ -34,13 +34,10 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
   });
 
   if (!response.ok) {
-    let data: unknown;
-    try {
-      data = await response.json();
-    } catch {
-      data = await response.text();
-    }
-    throw new ApiError(response.status, response.statusText, data);
+    // El cuerpo se lee una sola vez: response.json() seguido de response.text()
+    // provoca "body stream already read" y oculta el error HTTP real.
+    const raw = await response.text().catch(() => '');
+    throw new ApiError(response.status, response.statusText, parseErrorBody(raw));
   }
 
   if (response.status === 204) return undefined as T;

@@ -13,6 +13,15 @@ export class ApiError extends Error {
   }
 }
 
+/** Parsea el cuerpo de una respuesta de error leído una única vez. */
+export function parseErrorBody(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** Convierte cualquier fallo de red/HTTP en un mensaje mostrable al usuario. */
 export function describeError(error: unknown): string {
   if (error instanceof ApiError) {

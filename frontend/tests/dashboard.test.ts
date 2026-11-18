@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ApiError, describeError } from '../src/api/errors.ts';
+import { ApiError, describeError, parseErrorBody } from '../src/api/errors.ts';
 import {
   hasError,
   idleState,
@@ -170,6 +170,13 @@ test('el botón de reintento recupera un servicio que había fallado', () => {
   assert.equal(recuperado.status, 'success');
   assert.equal(recuperado.error, null);
   assert.equal(recuperado.data?.length, 1);
+});
+
+test('el cuerpo de un error HTTP se lee una sola vez y se parsea sin enmascarar el status', () => {
+  assert.deepEqual(parseErrorBody('{"error":"DB caída"}'), { error: 'DB caída' });
+  assert.equal(parseErrorBody('<html>502 Bad Gateway</html>'), '<html>502 Bad Gateway</html>');
+  const httpError = new ApiError(502, 'Bad Gateway', parseErrorBody('<html>502</html>'));
+  assert.match(describeError(httpError), /502 \(Bad Gateway\)/);
 });
 
 test('describeError distingue errores HTTP, de red y desconocidos', () => {

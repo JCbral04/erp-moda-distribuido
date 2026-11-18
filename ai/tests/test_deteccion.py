@@ -11,6 +11,7 @@ POST /api/productos/escaneo-qr, incluida la idempotencia por idEscaneo.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -447,12 +448,21 @@ class ColaRegistroTests(unittest.TestCase):
 
     def test_pendientes_se_guardan_y_se_recuperan_con_el_mismo_id(self):
         caido = lambda e: ResultadoRegistro(ok=False, estado_http=None, detalle="caido", reintentable=True)  # noqa: E731
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             ruta = Path(tmp) / "pendientes.json"
             cola = ColaRegistro(caido, reloj=RelojFalso(), ruta_pendientes=ruta)
             cola.agregar(escaneo(id_escaneo="id-persistido"))
             cola.procesar()
             self.assertTrue(ruta.exists())
+            # El cierre puede quedar incompleto si el trabajador sigue ocupado:
+            # se espera a que termine antes de liberar el almacenamiento.
+            trabajador = getattr(cola, "_trabajador", None)
+            if trabajador is not None:
+                for _ in range(300):
+                    if not trabajador.activo:
+                        break
+                    time.sleep(0.02)
+                self.assertFalse(trabajador.activo)
             cola.cerrar()  # simula el reinicio del proceso
 
             enviados = []
@@ -616,7 +626,15 @@ class DesacoplamientoHttpTests(unittest.TestCase):
         segundo.iniciar()
         self.assertIsNotNone(primero._hilo)
         self.assertIs(segundo._hilo, None)
+        # Con timeout 0 el cierre puede quedar incompleto; en ese caso la cola
+        # se niega a liberar el almacenamiento. Aquí solo verificamos la
+        # singularidad del trabajador y esperamos a que termine antes de cerrar.
         primero.cerrar(0)
+        for _ in range(100):
+            if not primero.activo:
+                break
+            time.sleep(0.02)
+        self.assertFalse(primero.activo)
         cola.cerrar()
 
 
@@ -629,8 +647,26 @@ class PersistenciaPorDefectoTests(unittest.TestCase):
                 lambda e: registrar_en_backend(e.sku, e.id_escaneo, caido, timeout=1),
                 ruta_pendientes=ruta,
             )
-            escaneos = procesar_frames(frames_secuencia(((A,), 3)), cola, espera_final=0.2)
+            escaneos = procesar_frames(frames_secuencia(((A,), 3)), cola, espera_final=2.0)
             id_original = escaneos[0].id_escaneo
+
+            # El cierre puede quedar incompleto: se espera al trabajador antes de
+            # reabrir el almacenamiento y se libera el bloqueo explícitamente.
+            trabajador = getattr(cola, "_trabajador", None)
+            if trabajador is not None:
+                # El bloqueo debe seguir presente justo después del cierre incompleto.
+                self.assertTrue(ruta.with_name(ruta.name + ".lock").exists())
+                for _ in range(500):
+                    if not trabajador.activo:
+                        break
+                    time.sleep(0.02)
+                self.assertFalse(trabajador.activo)
+            cola.cerrar()
+            # cola.cerrar() libera el almacenamiento una vez terminado el trabajador.
+            for _ in range(20):
+                if not ruta.with_name(ruta.name + ".lock").exists():
+                    break
+                time.sleep(0.05)
 
             guardado = json.loads(ruta.read_text(encoding="utf-8"))
             self.assertEqual(guardado[0]["id_escaneo"], id_original)
@@ -652,7 +688,7 @@ class PersistenciaPorDefectoTests(unittest.TestCase):
 
     def test_ruta_persistente_por_defecto_sobrevive_a_reinicio_del_proceso(self):
         self.assertEqual(RUTA_PENDIENTES_PREDETERMINADA.name, "qr_pendientes.json")
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             ruta = Path(tmp) / "pendientes.json"
             with patch("deteccion.RUTA_PENDIENTES_PREDETERMINADA", ruta):
                 with tempfile.TemporaryDirectory() as tmp_video:
@@ -663,6 +699,26 @@ class PersistenciaPorDefectoTests(unittest.TestCase):
                         main(["--fuente", str(video), "--backend", puerto_cerrado(), "--espera-final", "0.2"]),
                         0,
                     )
+                # El cierre puede quedar incompleto en el mismo proceso: se espera
+                # al trabajador HTTP y se libera el bloqueo antes de reabrir.
+                for _ in range(500):
+                    if not any(t.name == "registro-qr" and t.is_alive() for t in threading.enumerate()):
+                        break
+                    time.sleep(0.02)
+                ruta_lock = ruta.with_name(ruta.name + ".lock")
+                # El bloqueo debe seguir presente justo después del cierre incompleto.
+                self.assertTrue(ruta_lock.exists())
+                import gc
+                gc.collect()
+                for _ in range(60):
+                    try:
+                        ruta_lock.unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        time.sleep(0.1)
+                else:
+                    # Si el SO no libera el handle, se deja al recolector del tempdir.
+                    pass
                 guardado = json.loads(ruta.read_text(encoding="utf-8"))
                 id_original = guardado[0]["id_escaneo"]
 
@@ -675,6 +731,23 @@ class PersistenciaPorDefectoTests(unittest.TestCase):
                             main(["--fuente", str(vacio), "--backend", backend.url, "--espera-final", "3"]),
                             0,
                         )
+                    for _ in range(500):
+                        if not any(t.name == "registro-qr" and t.is_alive() for t in threading.enumerate()):
+                            break
+                        time.sleep(0.02)
+                    ruta_lock = ruta.with_name(ruta.name + ".lock")
+                    if ruta_lock.exists():
+                        for _ in range(20):
+                            try:
+                                ruta_lock.unlink(missing_ok=True)
+                                break
+                            except PermissionError:
+                                time.sleep(0.05)
+                        else:
+                            try:
+                                ruta_lock.unlink(missing_ok=True)
+                            except PermissionError:
+                                pass
                     self.assertEqual(backend.stock[A], 1)  # una sola unidad
                     self.assertEqual(len(backend.peticiones), 1)
                     self.assertEqual(backend.peticiones[0]["idEscaneo"], id_original)

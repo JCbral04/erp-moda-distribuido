@@ -8,7 +8,7 @@
 **Fashion Intelligence** no es una plantilla genérica de administración ni una aplicación cosmética superficial. Es la infraestructura operativa digital para casas de moda de alta gama, ateliers y minoristas de confección premium.
 
 El lenguaje visual combina:
-- **Elegancia de Atelier:** Tipografía editorial (*Instrument Serif*), tonos de superficie profundos (`#090A0C` base), y detalles en oro champagne (`#D6B77A`) aplicados con disciplina artesanal (≤ 15% de cobertura visual).
+- **Elegancia y Precisión:** Tipografía editorial (*Instrument Serif*), tonos de superficie profundos (`#090A0C` base), y detalles en oro champagne (`#D6B77A`) aplicados con disciplina artesanal (≤ 15% de cobertura visual).
 - **Rigor Operativo:** Tipografía monoespaciada de alta legibilidad (*Geist Mono*) para todos los valores cuantitativos con `font-variant-numeric: tabular-nums`, métricas financieras asimétricas, y jerarquía visual estricta.
 - **Rendimiento y Ligereza:** Transiciones acotadas exclusivamente a `transform` y `opacity`, cero dependencias duplicadas, renderizado instantáneo y accesibilidad universal (WCAG AA).
 
@@ -54,7 +54,7 @@ El lenguaje visual combina:
 ### 3. Reglas Tipográficas Obligatorias
 
 1. **Instrument Serif:**
-   - Exclusivo para: Logo corporativo, titulares editoriales de sección (`<h1>`), saludo contextual y branding del atelier.
+   - Exclusivo para: Logo corporativo, titulares editoriales de sección (`<h1>`), saludo contextual y marca del sistema.
    - **PROHIBIDO:** En datos numéricos, precios, tablas, campos de formulario o botones.
 2. **Geist UI:**
    - Familia de trabajo para toda la interfaz gráfica: etiquetas de navegación, contenido de tarjetas, botones y modales.

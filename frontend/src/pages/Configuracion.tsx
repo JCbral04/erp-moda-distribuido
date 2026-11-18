@@ -14,13 +14,13 @@ export const Configuracion: React.FC = () => {
           margin: 0,
         }}
       >
-        Configuración del Atelier
+        Configuración del Sistema
       </h1>
       <Card variant="surface">
         <EmptyState
           icon={<Settings size={24} />}
           title="Ajustes y Parámetros del Sistema (Etapa 2)"
-          description="Ajustes de tienda, pasarelas de pago, perfiles de usuario y parámetros fiscales del atelier serán implementados en la Etapa 2."
+          description="Ajustes de tienda, pasarelas de pago, perfiles de usuario y parámetros fiscales del negocio serán implementados en la Etapa 2."
         />
       </Card>
     </div>

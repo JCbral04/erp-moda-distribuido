@@ -143,7 +143,7 @@ export const Header: React.FC<HeaderProps> = ({
               onMouseEnter={(e) => (e.currentTarget.style.color = colors.text.primary)}
               onMouseLeave={(e) => (e.currentTarget.style.color = colors.text.tertiary)}
             >
-              Atelier
+              ERP Moda
             </Link>
             <ChevronRight size={12} style={{ color: colors.text.tertiary }} aria-hidden="true" />
             <span
@@ -304,7 +304,7 @@ export const Header: React.FC<HeaderProps> = ({
                   display: 'inline-block',
                 }}
               >
-                Atelier
+                Admin
               </span>
             </button>
 
@@ -335,10 +335,10 @@ export const Header: React.FC<HeaderProps> = ({
                   }}
                 >
                   <p style={{ fontSize: '12px', fontWeight: 600, color: colors.text.primary }}>
-                    Alexandre Dubois
+                    Administrador
                   </p>
                   <p style={{ fontSize: '11px', color: colors.text.tertiary }}>
-                    admin@ateliermoda.com
+                    admin@erpmoda.com
                   </p>
                 </div>
 
@@ -360,7 +360,7 @@ export const Header: React.FC<HeaderProps> = ({
                   onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
                 >
                   <User size={14} style={{ color: colors.text.secondary }} />
-                  <span>Perfil de Atelier</span>
+                  <span>Perfil de Usuario</span>
                 </Link>
 
                 <Link

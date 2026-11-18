@@ -437,7 +437,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               fontWeight: 600,
               flexShrink: 0,
             }}
-            title="Alexandre Dubois — Director Creativo"
+            title="Usuario Administrador — Gestión ERP"
           >
             AD
           </div>
@@ -461,7 +461,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   textOverflow: 'ellipsis',
                 }}
               >
-                Alexandre Dubois
+                Administrador
               </span>
               <span
                 style={{
@@ -472,7 +472,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   textOverflow: 'ellipsis',
                 }}
               >
-                Atelier Director
+                Gestión y Operaciones
               </span>
             </div>
           )}

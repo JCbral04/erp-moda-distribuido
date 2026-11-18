@@ -197,7 +197,7 @@ export const Dashboard: React.FC = () => {
                 color: colors.accent.champagne,
               }}
             >
-              Atelier Haute Couture · Fashion Intelligence
+              Fashion Intelligence · ERP Moda
             </span>
             <span style={{ color: colors.border.strong }} aria-hidden="true">
               ·
@@ -223,7 +223,7 @@ export const Dashboard: React.FC = () => {
             }}
             className="text-balance"
           >
-            {greeting}, Alexandre
+            {greeting}, Administrador
           </h1>
         </div>
 
@@ -613,7 +613,7 @@ export const Dashboard: React.FC = () => {
                   fontFamily: '"Geist Mono", monospace',
                 }}
               >
-                Atelier Series
+                Tendencia Comercial
               </span>
             </div>
           </CardHeader>

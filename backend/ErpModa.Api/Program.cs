@@ -46,6 +46,10 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 
+// PRIMERO: corrige esquema/host segun el proxy de confianza ANTES de que
+// HSTS y UseHttpsRedirection evaluen el request (review #93 ronda 3).
+app.UseForwardedHeaders();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -60,9 +64,6 @@ else
     app.UseHsts();
 }
 
-// Antes de UseHttpsRedirection: corrige esquema/host segun los headers
-// del proxy de confianza configurado arriba.
-app.UseForwardedHeaders();
 app.UseHttpsRedirection();
 app.MapControllers();
 app.MapHealthChecks("/health");

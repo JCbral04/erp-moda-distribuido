@@ -27,6 +27,9 @@ CREATE TABLE ventas (
     estado            VARCHAR(20)   NOT NULL
         CHECK (estado IN ('Pendiente', 'Confirmada', 'Anulada')),      -- espejo EstadoVenta.cs
     motivo_anulacion  VARCHAR(255),
+    -- Ownership (#83): id estable del usuario autenticado (claim NameIdentifier)
+    -- que creó la venta. NULL para ventas históricas anteriores al cambio.
+    vendedor_id       VARCHAR(150)  NULL,
     creado_en         TIMESTAMPTZ   NOT NULL DEFAULT now(),
     actualizado_en    TIMESTAMPTZ   NOT NULL DEFAULT now(),
 
@@ -42,6 +45,9 @@ CREATE TABLE ventas (
 
 CREATE INDEX ix_ventas_fecha  ON ventas (fecha);   -- historial por rango de fechas (HU-003)
 CREATE INDEX ix_ventas_estado ON ventas (estado);  -- resumen y filtros por estado
+-- Mismo nombre que genera EF Core (HasIndex(v => v.VendedorId)); las comillas
+-- conservan la capitalización para que coincida con el modelo y la migración.
+CREATE INDEX "IX_ventas_vendedor_id" ON ventas (vendedor_id);  -- filtrado por propietario (#83)
 
 -- ===========================================================================
 -- detalle_venta: una linea de producto de la venta. Requiere al menos un detalle

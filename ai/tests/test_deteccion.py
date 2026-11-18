@@ -32,6 +32,7 @@ from deteccion import (  # noqa: E402
     Escaneo,
     ResultadoRegistro,
     RUTA_PENDIENTES_PREDETERMINADA,
+    TrabajadorDetenidoError,
     TrabajadorRegistro,
     leer_qrs,
     main,
@@ -232,6 +233,7 @@ class BackendFalso:
         fallar_con: list[int] | None = None,
         latencia: float = 0.0,
         registrar_llegada: list[float] | None = None,
+        respuesta_200: object | None = None,
     ):
         self.stock = dict(stock)
         self.registrados: dict[str, str] = {}
@@ -240,6 +242,7 @@ class BackendFalso:
         self.fallar_con = list(fallar_con or [])
         self.latencia = latencia
         self.registrar_llegada = registrar_llegada
+        self.respuesta_200 = respuesta_200  # cuerpo alternativo para un 200 (contrato roto)
         backend = self
 
         class Manejador(BaseHTTPRequestHandler):
@@ -258,7 +261,7 @@ class BackendFalso:
                     if backend.registrados[id_escaneo] != sku:
                         self._responder(409, "conflicto")
                         return
-                    self._responder(200, {"sku": sku, "stock": backend.stock[sku], "duplicado": True})
+                    self._responder(200, {"idEscaneo": id_escaneo, "sku": sku, "stock": backend.stock[sku], "duplicado": True})
                     return
                 if sku not in backend.stock:
                     self._responder(404, "No existe")
@@ -270,7 +273,7 @@ class BackendFalso:
                     self.close_connection = True
                     self.connection.shutdown(socket.SHUT_RDWR)
                     return
-                self._responder(200, {"sku": sku, "stock": backend.stock[sku], "duplicado": False})
+                self._responder(200, backend.respuesta_200 if backend.respuesta_200 is not None else {"idEscaneo": id_escaneo, "sku": sku, "stock": backend.stock[sku], "duplicado": False})
 
             def _responder(self, codigo, datos):
                 cuerpo = json.dumps(datos).encode()
@@ -465,6 +468,7 @@ class ColaRegistroTests(unittest.TestCase):
             self.assertEqual(enviados, ["id-persistido"])
             self.assertEqual([e.estado for e in terminados], ["duplicado"])
             self.assertFalse(ruta.exists())
+            recuperada.cerrar()
 
     def test_vaciar_reintenta_hasta_registrar_o_agotar_la_espera(self):
         respuestas = [ResultadoRegistro(ok=False, estado_http=503, detalle="", reintentable=True)] * 2 + [
@@ -685,6 +689,213 @@ class PersistenciaPorDefectoTests(unittest.TestCase):
             primera.cerrar()
             segunda = ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"), ruta_pendientes=ruta)
             segunda.cerrar()
+
+
+# --------------------------------------------------------------------------- review del 18/11 (2a ronda)
+
+
+class BackendBloqueable:
+    """`enviar` falso e idempotente cuya primera peticion se queda bloqueada.
+
+    La peticion bloqueada SI registra el escaneo en el "backend" pero devuelve un
+    fallo reintentable (respuesta perdida), igual que un timeout tras procesarlo.
+    """
+
+    def __init__(self):
+        self.registrados: dict[str, str] = {}
+        self.enviados: list[str] = []
+        self.empezo = threading.Event()
+        self.soltar = threading.Event()
+        self._bloquear_primera = True
+        self._lock = threading.Lock()
+
+    def __call__(self, escaneo: Escaneo) -> ResultadoRegistro:
+        with self._lock:
+            self.enviados.append(escaneo.id_escaneo)
+            bloquear, self._bloquear_primera = self._bloquear_primera, False
+        if bloquear:
+            self.empezo.set()
+            self.soltar.wait(10)
+            self.registrados.setdefault(escaneo.id_escaneo, escaneo.sku)
+            return ResultadoRegistro(ok=False, estado_http=None, detalle="respuesta perdida", reintentable=True)
+        duplicado = escaneo.id_escaneo in self.registrados
+        self.registrados.setdefault(escaneo.id_escaneo, escaneo.sku)
+        return ResultadoRegistro(ok=True, estado_http=200, detalle="ok", stock=1, duplicado=duplicado)
+
+
+class CierreConPeticionBloqueadaTests(unittest.TestCase):
+    """Hallazgo 1: el almacenamiento no se libera mientras el trabajador pueda escribir."""
+
+    def test_cierre_incompleto_no_libera_el_almacenamiento_ni_pierde_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            backend = BackendBloqueable()
+            cola = ColaRegistro(backend, ruta_pendientes=ruta)
+            trabajador = TrabajadorRegistro(cola, notificar=lambda e: None)
+            cola.agregar(escaneo(id_escaneo="id-bloqueado"))
+            cola.agregar(escaneo(id_escaneo="id-en-espera"))
+            trabajador.iniciar()
+            self.assertTrue(backend.empezo.wait(5), "la peticion no llego a empezar")
+
+            # Cierre con un plazo (0,2 s) menor que la peticion bloqueada.
+            resultado_cierre: list[bool] = []
+
+            def cerrar_todo():
+                resultado_cierre.append(trabajador.cerrar(0.2))
+                cola.cerrar()
+
+            cierre = threading.Thread(target=cerrar_todo)
+            cierre.start()
+            time.sleep(0.6)  # el plazo ya vencio
+
+            self.assertTrue(cierre.is_alive(), "el cierre no espero al trabajador")
+            self.assertTrue(cola.almacenamiento_bloqueado)
+            with self.assertRaises(RuntimeError):  # una segunda instancia no puede entrar
+                ColaRegistro(backend, ruta_pendientes=ruta)
+            guardados = {d["id_escaneo"] for d in json.loads(ruta.read_text(encoding="utf-8"))}
+            self.assertEqual(guardados, {"id-bloqueado", "id-en-espera"})
+
+            backend.soltar.set()  # la peticion original termina
+            cierre.join(10)
+            self.assertFalse(cierre.is_alive())
+            self.assertEqual(resultado_cierre, [False])  # no termino dentro del plazo
+            self.assertFalse(cola.almacenamiento_bloqueado)
+            # Tras vencer el plazo no se inicio ninguna peticion nueva.
+            self.assertEqual(backend.enviados, ["id-bloqueado"])
+
+            # Ahora si entra la segunda instancia y recupera ambos ids sin duplicar.
+            segunda = ColaRegistro(backend, ruta_pendientes=ruta, reloj=RelojFalso())
+            self.assertEqual({e.id_escaneo for e in segunda.pendientes}, {"id-bloqueado", "id-en-espera"})
+            terminados = segunda.vaciar(espera_max=1, dormir=lambda s: None)
+            segunda.cerrar()
+
+            self.assertEqual(
+                {e.id_escaneo: e.estado for e in terminados},
+                {"id-bloqueado": "duplicado", "id-en-espera": "registrado"},
+            )
+            self.assertEqual(len(backend.registrados), 2)  # una unidad por id
+            self.assertFalse(ruta.exists())
+
+    def test_detener_impide_iniciar_peticiones_nuevas(self):
+        llamadas: list[str] = []
+        cola = ColaRegistro(lambda e: llamadas.append(e.id_escaneo) or ResultadoRegistro(True, 200, "ok"))
+        cola.agregar(escaneo())
+        cola.detener()
+        self.assertEqual(cola.procesar(), [])
+        self.assertEqual(llamadas, [])
+
+    def test_no_se_agrega_tras_cerrar(self):
+        cola = ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"))
+        cola.cerrar()
+        with self.assertRaises(RuntimeError):
+            cola.agregar(escaneo())
+
+    def test_bloqueo_se_libera_si_el_proceso_muere(self):
+        # Un proceso hijo toma el bloqueo y termina sin cerrar la cola: el SO lo suelta.
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            codigo = (
+                "import sys, os; sys.path.insert(0, sys.argv[1]);"
+                "from pathlib import Path; from deteccion import ColaRegistro, ResultadoRegistro;"
+                "ColaRegistro(lambda e: None, ruta_pendientes=Path(sys.argv[2])); os._exit(0)"
+            )
+            import subprocess
+
+            subprocess.run(
+                [sys.executable, "-c", codigo, str(Path(__file__).resolve().parents[1]), str(ruta)],
+                check=True, timeout=60,
+            )
+            self.assertTrue(ruta.with_name(ruta.name + ".lock").exists())  # quedo el archivo...
+            cola = ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"), ruta_pendientes=ruta)
+            cola.cerrar()  # ...pero no el bloqueo
+
+
+class SupervisionTrabajadorTests(unittest.TestCase):
+    """Hallazgo 2: el trabajador no puede morir en silencio."""
+
+    def test_backoff_con_mas_de_1024_intentos_no_desborda(self):
+        reloj = RelojFalso()
+        cola = ColaRegistro(
+            lambda e: ResultadoRegistro(ok=False, estado_http=None, detalle="caido", reintentable=True),
+            reloj=reloj,
+        )
+        cola.agregar(escaneo())
+        for _ in range(1100):
+            cola.procesar()
+            reloj.ahora = cola.pendientes[0].proximo_intento
+        pendiente = cola.pendientes[0]
+        self.assertEqual(pendiente.intentos, 1100)
+        self.assertEqual(pendiente.id_escaneo, "id-1")
+
+    def test_200_con_json_valido_pero_estructura_incorrecta_no_se_da_por_registrado(self):
+        cuerpos = [{"ok": True}, [], {"idEscaneo": "otro-id", "stock": 1, "duplicado": False},
+                   {"idEscaneo": "id-1", "stock": "1", "duplicado": False},
+                   {"idEscaneo": "id-1", "stock": 1}]
+        for cuerpo in cuerpos:
+            with self.subTest(cuerpo=cuerpo), BackendFalso({A: 0}, respuesta_200=cuerpo) as backend:
+                resultado = registrar_en_backend(A, "id-1", backend.url)
+                self.assertFalse(resultado.ok)
+                self.assertTrue(resultado.reintentable)
+
+    def test_respuesta_con_estructura_incorrecta_conserva_el_uuid(self):
+        with BackendFalso({A: 0}, respuesta_200={"ok": True}) as backend:
+            cola = ColaRegistro(lambda e: registrar_en_backend(e.sku, e.id_escaneo, backend.url), reloj=RelojFalso())
+            cola.agregar(escaneo(id_escaneo="id-ambiguo"))
+            self.assertEqual(cola.procesar(), [])
+        self.assertEqual([e.id_escaneo for e in cola.pendientes], ["id-ambiguo"])
+
+    def test_excepcion_inesperada_detiene_la_captura_y_conserva_pendientes(self):
+        def enviar_roto(e):
+            raise RuntimeError("fallo inesperado")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            cola = ColaRegistro(enviar_roto, ruta_pendientes=ruta)
+            procesados: list[int] = []
+
+            def frames():
+                for i in range(400):
+                    procesados.append(i)
+                    yield frame_con(A) if i < 5 else frame_con()
+                    time.sleep(0.005)
+
+            with self.assertRaises(TrabajadorDetenidoError):
+                procesar_frames(frames(), cola, espera_final=0.2)
+
+            self.assertLess(len(procesados), 400, "siguio capturando sin trabajador")
+            self.assertEqual(len(json.loads(ruta.read_text(encoding="utf-8"))), 1)
+            self.assertFalse(cola.almacenamiento_bloqueado)
+
+    def test_error_de_escritura_del_almacenamiento_detiene_el_lector(self):
+        class ColaConDiscoRoto(ColaRegistro):
+            def _guardar(self):
+                if threading.current_thread().name == "registro-qr":
+                    raise OSError("disco lleno")
+                super()._guardar()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            cola = ColaConDiscoRoto(lambda e: ResultadoRegistro(True, 200, "ok", stock=1), ruta_pendientes=ruta)
+
+            def frames():
+                for i in range(400):
+                    yield frame_con(A) if i < 5 else frame_con()
+                    time.sleep(0.005)
+
+            with self.assertRaises(TrabajadorDetenidoError) as ctx:
+                procesar_frames(frames(), cola, espera_final=0.2)
+            self.assertIsInstance(ctx.exception.__cause__, OSError)
+            # El escaneo sigue en disco: al reiniciar se reenvia con su id (el backend
+            # respondera duplicado si ya lo tenia).
+            self.assertEqual(len(json.loads(ruta.read_text(encoding="utf-8"))), 1)
+
+    def test_main_devuelve_error_si_el_trabajador_falla(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = generar_video_sintetico(Path(tmp) / "v.avi", [A], frames_qr=5, frames_vacio=200)
+            with patch("deteccion.registrar_en_backend", side_effect=RuntimeError("boom")):
+                codigo = main(["--fuente", str(video), "--backend", "http://127.0.0.1:1",
+                               "--pendientes", str(Path(tmp) / "p.json"), "--espera-final", "0.2"])
+            self.assertEqual(codigo, 2)
 
 
 if __name__ == "__main__":

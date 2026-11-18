@@ -26,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import weakref
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -155,6 +156,19 @@ _DETALLE_HTTP = {
 }
 
 
+def _respuesta_valida(datos: object, id_escaneo: str) -> bool:
+    """Comprueba que un 200 tenga la forma de EscaneoQrResponseDto y sea de este escaneo."""
+    if not isinstance(datos, dict):
+        return False
+    stock = datos.get("stock")
+    return (
+        str(datos.get("idEscaneo", "")).lower() == id_escaneo.lower()
+        and isinstance(stock, int)
+        and not isinstance(stock, bool)
+        and isinstance(datos.get("duplicado"), bool)
+    )
+
+
 def registrar_en_backend(
     sku: str,
     id_escaneo: str,
@@ -170,6 +184,15 @@ def registrar_en_backend(
     try:
         with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
             datos = json.loads(respuesta.read().decode("utf-8"))
+            if not _respuesta_valida(datos, id_escaneo):
+                # 200 que no corresponde al contrato (proxy, version distinta...): no se
+                # puede saber si se registro, asi que se reintenta con el mismo id.
+                return ResultadoRegistro(
+                    ok=False,
+                    estado_http=respuesta.status,
+                    detalle="respuesta del backend con formato inesperado",
+                    reintentable=True,
+                )
             return ResultadoRegistro(
                 ok=True,
                 estado_http=respuesta.status,
@@ -211,58 +234,73 @@ class Escaneo:
 Enviar = Callable[[Escaneo], ResultadoRegistro]
 
 
+# Bloqueo de archivo del sistema operativo: el SO lo suelta si el proceso muere.
+if os.name == "nt":
+    import msvcrt
+
+    def _bloquear_archivo(archivo) -> None:
+        archivo.seek(0)
+        msvcrt.locking(archivo.fileno(), msvcrt.LK_NBLCK, 1)
+
+    def _desbloquear_archivo(archivo) -> None:
+        archivo.seek(0)
+        msvcrt.locking(archivo.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _bloquear_archivo(archivo) -> None:
+        fcntl.flock(archivo.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _desbloquear_archivo(archivo) -> None:
+        fcntl.flock(archivo.fileno(), fcntl.LOCK_UN)
+
+
 class _BloqueoAlmacenamiento:
-    """Bloqueo por archivo para que dos lectores no procesen el mismo JSON."""
+    """Bloqueo exclusivo del JSON de pendientes entre instancias del lector.
+
+    Usa el bloqueo de archivos del sistema operativo (msvcrt en Windows, fcntl en
+    Linux/macOS) sobre `<ruta>.lock`. El SO lo suelta si el proceso termina, incluso
+    de forma abrupta, asi que no quedan bloqueos huerfanos y no hace falta
+    comprobar PIDs (en Windows `os.kill(pid, 0)` no comprueba nada: envia
+    CTRL_C_EVENT y no falla con un PID que ya termino).
+    El archivo `.lock` se deja en disco: lo que importa es el bloqueo, no su existencia.
+    """
 
     def __init__(self, ruta: Path) -> None:
         self.ruta = ruta.with_name(ruta.name + ".lock")
-        self._fd: int | None = None
+        self._archivo = None
+        self._finalizador: weakref.finalize | None = None
 
     def adquirir(self) -> None:
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                self._fd = os.open(self.ruta, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                os.write(self._fd, str(os.getpid()).encode("ascii"))
-                return
-            except FileExistsError:
-                if self._proceso_activo():
-                    raise RuntimeError(
-                        f"Otro lector está usando el almacenamiento de pendientes ({self.ruta}). "
-                        "Cierra esa instancia antes de iniciar otra."
-                    )
-                # Lock huérfano de un proceso que terminó: se retira y se reintenta.
-                try:
-                    self.ruta.unlink()
-                except FileNotFoundError:
-                    pass
-        raise RuntimeError(f"No se pudo adquirir el bloqueo de {self.ruta}")
-
-    def _proceso_activo(self) -> bool:
+        archivo = open(self.ruta, "a+b")
         try:
-            pid = int((self.ruta.read_text() or "0").strip())
-        except (OSError, ValueError):
-            return True
-        if pid <= 0:
-            return True
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True  # existe, pero no tenemos permiso para señalarlo
+            _bloquear_archivo(archivo)
+        except OSError as exc:
+            archivo.close()
+            raise RuntimeError(
+                f"Otro lector está usando el almacenamiento de pendientes ({self.ruta}). "
+                "Cierra esa instancia antes de iniciar otra."
+            ) from exc
+        self._archivo = archivo
+        # Red de seguridad si nadie llama a liberar(): al recolectar el objeto (ya
+        # no hay trabajador que lo use) se cierra el archivo y el SO suelta el bloqueo.
+        self._finalizador = weakref.finalize(self, archivo.close)
 
     def liberar(self) -> None:
-        if self._fd is None:
+        if self._archivo is None:
             return
-        os.close(self._fd)
-        self._fd = None
+        archivo, self._archivo = self._archivo, None
+        self._finalizador.detach()
         try:
-            if int((self.ruta.read_text() or "0").strip()) == os.getpid():
-                self.ruta.unlink()
-        except (OSError, ValueError):
-            pass
+            _desbloquear_archivo(archivo)
+        except OSError as exc:
+            # Cerrar el archivo libera el bloqueo de todas formas; se avisa para
+            # no ocultar un problema del sistema de archivos.
+            print(f"  aviso: no se pudo desbloquear {self.ruta} ({exc}); se libera al cerrarlo.", file=sys.stderr)
+        finally:
+            archivo.close()
 
 
 class ColaRegistro:
@@ -275,9 +313,12 @@ class ColaRegistro:
 
     Con `ruta_pendientes` los escaneos sin confirmar se guardan en un JSON y se
     recuperan al arrancar de nuevo el lector. Las escrituras son atomicas y un
-    bloqueo por archivo impide dos instancias sobre el mismo archivo.
-    La lista se protege con un RLock: la peticion HTTP se hace FUERA del lock
-    para que agregar escaneos nunca espere al backend.
+    bloqueo del sistema operativo impide dos instancias sobre el mismo archivo.
+
+    La peticion HTTP se hace FUERA del lock para que agregar escaneos nunca espere
+    al backend. `detener()` impide iniciar peticiones nuevas y `cerrar()` espera a
+    que termine la que este en curso antes de soltar el almacenamiento: nadie
+    escribe el JSON sin tener el bloqueo.
     """
 
     def __init__(
@@ -294,6 +335,10 @@ class ColaRegistro:
         self._espera_maxima = espera_maxima
         self._ruta = Path(ruta_pendientes) if ruta_pendientes is not None else None
         self._bloqueo = threading.RLock()
+        self._condicion = threading.Condition(self._bloqueo)
+        self._en_curso = 0
+        self._detenida = False
+        self._cerrada = False
         self._archivo_bloqueo: _BloqueoAlmacenamiento | None = None
         if self._ruta is not None:
             self._archivo_bloqueo = _BloqueoAlmacenamiento(self._ruta)
@@ -304,77 +349,127 @@ class ColaRegistro:
                     f"No se puede acceder al almacenamiento persistente de pendientes "
                     f"({self._ruta}): {exc}. Revisa permisos o configura --pendientes."
                 ) from exc
-        self._pendientes: list[Escaneo] = self._cargar()
+        try:
+            self._pendientes: list[Escaneo] = self._cargar()
+        except RuntimeError:
+            self._soltar_almacenamiento()
+            raise
 
     @property
     def pendientes(self) -> list[Escaneo]:
         with self._bloqueo:
             return list(self._pendientes)
 
+    @property
+    def en_curso(self) -> int:
+        with self._bloqueo:
+            return self._en_curso
+
+    @property
+    def almacenamiento_bloqueado(self) -> bool:
+        return self._archivo_bloqueo is not None
+
     def agregar(self, escaneo: Escaneo) -> None:
         with self._bloqueo:
+            if self._cerrada:
+                raise RuntimeError("La cola de registro está cerrada: no se pueden agregar escaneos.")
             self._pendientes.append(escaneo)
             # Se persiste ANTES de intentar enviar: si el proceso muere, el id
             # original sigue disponible para el reinicio.
             self._guardar()
 
-    def procesar(self) -> list[Escaneo]:
-        """Intenta los escaneos pendientes cuyo turno llego. Devuelve los que terminaron."""
+    def _espera_tras(self, intentos: int) -> float:
+        # El exponente se acota antes de calcular: 2 ** 1024 ya no cabe en un float.
+        exponente = min(max(intentos - 1, 0), 30)
+        return min(self._espera_maxima, self._espera_inicial * (2.0 ** exponente))
+
+    def procesar(self, limite: float | None = None) -> list[Escaneo]:
+        """Intenta los escaneos pendientes cuyo turno llego. Devuelve los que terminaron.
+
+        No inicia peticiones nuevas si la cola esta detenida o si `limite` (segun
+        el reloj de la cola) ya paso.
+        """
         terminados: list[Escaneo] = []
         while True:
-            with self._bloqueo:
+            with self._condicion:
                 ahora = self._reloj()
+                if self._detenida or (limite is not None and ahora >= limite):
+                    break
                 escaneo = next((e for e in self._pendientes if e.proximo_intento <= ahora), None)
-            if escaneo is None:
-                break
+                if escaneo is None:
+                    break
+                self._en_curso += 1
 
-            resultado = self._enviar(escaneo)  # fuera del lock: la captura no espera
-            with self._bloqueo:
-                escaneo.intentos += 1
-                escaneo.estado_http = resultado.estado_http
-                escaneo.detalle = resultado.detalle
-                escaneo.stock = resultado.stock
+            try:
+                resultado = self._enviar(escaneo)  # fuera del lock: la captura no espera
+                with self._condicion:
+                    escaneo.intentos += 1
+                    escaneo.estado_http = resultado.estado_http
+                    escaneo.detalle = resultado.detalle
+                    escaneo.stock = resultado.stock
 
-                if resultado.ok:
-                    escaneo.estado = "duplicado" if resultado.duplicado else "registrado"
-                elif resultado.reintentable:
-                    espera = min(self._espera_maxima, self._espera_inicial * 2 ** (escaneo.intentos - 1))
-                    escaneo.proximo_intento = ahora + espera
+                    if resultado.ok:
+                        escaneo.estado = "duplicado" if resultado.duplicado else "registrado"
+                    elif resultado.reintentable:
+                        escaneo.proximo_intento = self._reloj() + self._espera_tras(escaneo.intentos)
+                        self._guardar()
+                        break  # backend lento o caido: no insistir con el resto en esta pasada
+                    else:
+                        escaneo.estado = "rechazado"
+
+                    self._pendientes.remove(escaneo)
                     self._guardar()
-                    break  # backend lento: no insistir con el resto en esta pasada
-                else:
-                    escaneo.estado = "rechazado"
-
-                self._pendientes.remove(escaneo)
-                terminados.append(escaneo)
-                self._guardar()
+                    terminados.append(escaneo)
+            finally:
+                with self._condicion:
+                    self._en_curso -= 1
+                    self._condicion.notify_all()
         return terminados
 
     def vaciar(self, espera_max: float, dormir: Callable[[float], None] = time.sleep) -> list[Escaneo]:
-        """Reintenta los pendientes hasta que no quede ninguno o pasen `espera_max` segundos."""
+        """Reintenta los pendientes hasta que no quede ninguno o pasen `espera_max` segundos.
+
+        Despues del plazo no se inicia ninguna peticion nueva.
+        """
         limite = self._reloj() + espera_max
-        terminados = self.procesar()
-        with self._bloqueo:
-            pendientes = list(self._pendientes)
-        while pendientes and self._reloj() < limite:
-            siguiente = min(e.proximo_intento for e in pendientes)
-            dormir(max(0.0, min(siguiente, limite) - self._reloj()))
-            terminados.extend(self.procesar())
+        terminados: list[Escaneo] = []
+        while True:
+            terminados.extend(self.procesar(limite=limite))
             with self._bloqueo:
                 pendientes = list(self._pendientes)
-        return terminados
+                detenida = self._detenida
+            if not pendientes or detenida or self._reloj() >= limite:
+                return terminados
+            siguiente = min(e.proximo_intento for e in pendientes)
+            dormir(max(0.0, min(siguiente, limite) - self._reloj()))
+
+    def detener(self) -> None:
+        """Impide iniciar peticiones nuevas. La que este en curso termina normalmente."""
+        with self._condicion:
+            self._detenida = True
+            self._condicion.notify_all()
+
+    def esperar_en_curso(self, timeout: float | None = None) -> bool:
+        """Espera a que no haya peticiones en curso. Devuelve False si vence `timeout`."""
+        with self._condicion:
+            return self._condicion.wait_for(lambda: self._en_curso == 0, timeout=timeout)
 
     def cerrar(self) -> None:
-        """Libera el bloqueo del archivo. Los pendientes quedan en disco con su id."""
+        """Detiene la cola, espera la peticion en curso y solo entonces libera el almacenamiento.
+
+        Los pendientes quedan en disco con su id original. La espera esta acotada
+        por el timeout HTTP de la peticion en vuelo.
+        """
+        with self._condicion:
+            self._detenida = True
+            self._cerrada = True
+            self._condicion.wait_for(lambda: self._en_curso == 0)
+            self._soltar_almacenamiento()
+
+    def _soltar_almacenamiento(self) -> None:
         if self._archivo_bloqueo is not None:
             self._archivo_bloqueo.liberar()
             self._archivo_bloqueo = None
-
-    def __del__(self) -> None:
-        try:
-            self.cerrar()
-        except Exception:
-            pass
 
     def _cargar(self) -> list[Escaneo]:
         if self._ruta is None or not self._ruta.exists():
@@ -391,6 +486,8 @@ class ColaRegistro:
     def _guardar(self) -> None:
         if self._ruta is None:
             return
+        if self._archivo_bloqueo is None:
+            raise RuntimeError("Escritura de pendientes sin el bloqueo del almacenamiento.")
         if not self._pendientes:
             self._ruta.unlink(missing_ok=True)
             return
@@ -440,11 +537,17 @@ def _imprimir(escaneo: Escaneo) -> None:
     )
 
 
+class TrabajadorDetenidoError(RuntimeError):
+    """El trabajador HTTP termino por un error inesperado: no se sigue capturando."""
+
+
 class TrabajadorRegistro:
     """Un único hilo que hace las peticiones HTTP fuera del bucle de captura.
 
     El lector solo encola escaneos; el trabajador los envía con los reintentos
     exponenciales de ColaRegistro. No se crea más de un trabajador por cola.
+    Si el hilo falla por una excepción inesperada, la guarda en `error`, detiene
+    la cola y lo avisa por stderr; `procesar_frames` deja de capturar al verlo.
     """
 
     def __init__(
@@ -456,6 +559,7 @@ class TrabajadorRegistro:
         self.cola = cola
         self.notificar = notificar
         self.intervalo = intervalo
+        self.error: BaseException | None = None
         self._alistado = threading.Event()
         self._hilo: threading.Thread | None = None
         self._bloqueo = threading.Lock()
@@ -473,36 +577,60 @@ class TrabajadorRegistro:
             self._hilo = threading.Thread(target=self._bucle, name="registro-qr", daemon=True)
             self._hilo.start()
 
+    @property
+    def activo(self) -> bool:
+        return self._hilo is not None and self._hilo.is_alive()
+
     def _bucle(self) -> None:
-        while not self._alistado.is_set():
-            for terminado in self.cola.procesar():
-                self.notificar(terminado)
-            self._alistado.wait(self.intervalo)
-
-        # Cierre ordenado: se agota el tiempo restante intentando los pendientes.
-        # Los que no se confirmen quedan en disco con su id original.
-        limite = self._limite_cierre
-        if limite is not None:
-            restante = max(0.0, limite - time.monotonic())
-            if restante > 0:
-                for terminado in self.cola.vaciar(restante):
+        try:
+            while not self._alistado.is_set():
+                for terminado in self.cola.procesar():
                     self.notificar(terminado)
+                self._alistado.wait(self.intervalo)
 
-    def cerrar(self, espera_max: float = ESPERA_FINAL_SEGUNDOS) -> None:
-        """Pide cortar, espera a lo sumo `espera_max` y deja los pendientes en disco."""
+            # Cierre ordenado: se usa el tiempo restante para intentar los pendientes,
+            # sin iniciar peticiones despues del plazo. Los que no se confirmen
+            # quedan en disco con su id original.
+            limite = self._limite_cierre
+            if limite is not None:
+                restante = limite - time.monotonic()
+                if restante > 0:
+                    for terminado in self.cola.vaciar(restante):
+                        self.notificar(terminado)
+        except Exception as exc:  # supervision: nunca terminar en silencio
+            self.error = exc
+            self.cola.detener()
+            print(
+                f"ERROR: el trabajador HTTP se detuvo por un error inesperado ({exc!r}). "
+                "Los escaneos sin confirmar quedan guardados con su id original.",
+                file=sys.stderr,
+            )
+
+    def cerrar(self, espera_max: float = ESPERA_FINAL_SEGUNDOS) -> bool:
+        """Pide el cierre y espera al trabajador. Devuelve True si terminó dentro del plazo.
+
+        Si el plazo vence con una petición en curso, la cola deja de iniciar
+        peticiones y se espera a que termine la que está en vuelo (como mucho el
+        timeout HTTP). Así el almacenamiento sigue bloqueado mientras el hilo
+        pueda escribir en él.
+        """
         with self._bloqueo:
             hilo = self._hilo
             self._limite_cierre = time.monotonic() + max(0.0, espera_max)
             self._alistado.set()
         if hilo is None:
-            return
+            return True
         hilo.join(timeout=max(0.0, espera_max))
-        if hilo.is_alive():
-            print(
-                "  aviso: el trabajador HTTP sigue ocupado tras el cierre; "
-                "los escaneos sin confirmar permanecen guardados con su id original.",
-                file=sys.stderr,
-            )
+        if not hilo.is_alive():
+            return True
+        self.cola.detener()
+        print(
+            "  aviso: venció el plazo de cierre con una petición en curso; se espera a que "
+            "termine sin iniciar otras. Los escaneos sin confirmar quedan guardados con su id original.",
+            file=sys.stderr,
+        )
+        hilo.join()
+        return False
 
 
 def procesar_frames(
@@ -515,7 +643,8 @@ def procesar_frames(
     """Captura y detecta QR; el HTTP lo hace un trabajador aparte.
 
     El bucle principal solo decodifica y encola. Con `cola=None` no se llama al
-    backend (modo simulado).
+    backend (modo simulado). Si el trabajador HTTP falla, se deja de capturar y se
+    lanza TrabajadorDetenidoError tras guardar los pendientes.
     """
     if directorio_salida is not None:
         directorio_salida.mkdir(parents=True, exist_ok=True)
@@ -530,6 +659,11 @@ def procesar_frames(
 
     try:
         for frame in frames:
+            if trabajador is not None and trabajador.error is not None:
+                raise TrabajadorDetenidoError(
+                    f"El trabajador HTTP se detuvo ({trabajador.error!r}); se deja de capturar "
+                    "para no acumular escaneos sin enviar."
+                ) from trabajador.error
             numero_frame += 1
             lecturas = leer_qrs(frame, detector)
             for sku in control.procesar(texto for texto, _ in lecturas):
@@ -553,8 +687,8 @@ def procesar_frames(
         print("\nInterrumpido por el usuario.")
     finally:
         if trabajador is not None and cola is not None:
-            # Cierre ordenado: termina la petición en curso dentro del límite y
-            # deja en disco los pendientes (con su UUID original).
+            # Cierre ordenado: el trabajador termina (o termina su petición en curso)
+            # ANTES de soltar el almacenamiento; los pendientes quedan con su UUID.
             trabajador.cerrar(espera_final)
             for pendiente in cola.pendientes:
                 print(
@@ -562,6 +696,11 @@ def procesar_frames(
                     f"tras {pendiente.intentos} intentos: {pendiente.detalle}"
                 )
             cola.cerrar()
+
+    if trabajador is not None and trabajador.error is not None:
+        raise TrabajadorDetenidoError(
+            f"El trabajador HTTP se detuvo ({trabajador.error!r}). Los pendientes quedan en disco."
+        ) from trabajador.error
 
     print(f"Frames procesados: {numero_frame}")
     return escaneos

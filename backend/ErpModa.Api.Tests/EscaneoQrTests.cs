@@ -15,10 +15,12 @@ using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using Npgsql;
 
 namespace ErpModa.Api.Tests;
 
@@ -412,5 +414,130 @@ public class EscaneoQrHttpTests : IClassFixture<WebApplicationFactory<Program>>
         using var response = await PostAsync(client, $"{{\"sku\":\"CAM-NEG-M\",\"idEscaneo\":\"{IdValido}\"}}");
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+}
+
+// Reintentos ante errores transitorios de PostgreSQL (review 2a ronda, hallazgo 3).
+// EF Core encapsula el error de PostgreSQL en DbUpdateException cuando ocurre en
+// SaveChangesAsync: aquí se reproduce ese caso con un interceptor que falla al guardar.
+public class EscaneoQrReintentosTests
+{
+    private const string Sku = "CAM-NEG-M";
+
+    private static PostgresException Pg(string sqlState, string? constraint = null) =>
+        new("error simulado", "ERROR", "ERROR", sqlState, constraintName: constraint);
+
+    public static IEnumerable<object[]> Casos() => new List<object[]>
+    {
+        new object[] { Pg("40001"), true },
+        new object[] { new DbUpdateException("x", Pg("40001")), true },
+        new object[] { new DbUpdateException("x", Pg("40P01")), true },
+        new object[] { new InvalidOperationException("x", new DbUpdateException("y", Pg("40001"))), true },
+        new object[] { new DbUpdateException("x", Pg("23505", ProductosService.IndiceUnicoEscaneoQr)), true },
+        new object[] { new DbUpdateException("x", Pg("23505", "uq_variantes_sku")), false },
+        new object[] { new DbUpdateException("x", Pg("23503", "movimientos_stock_variante_id_fkey")), false },
+        new object[] { new DbUpdateException("x", Pg("42P01")), false },
+        new object[] { new DbUpdateException("x"), false },
+        new object[] { new InvalidOperationException("x"), false },
+    };
+
+    [Theory]
+    [MemberData(nameof(Casos))]
+    public void EsErrorTransitorioEscaneo_RecorreExcepcionesInternas(Exception ex, bool esperado)
+    {
+        Assert.Equal(esperado, ProductosService.EsErrorTransitorioEscaneo(ex));
+    }
+
+    private sealed class FallosAlGuardar : SaveChangesInterceptor
+    {
+        private readonly Func<Exception> _crear;
+        private int _restantes;
+        public int Llamadas { get; private set; }
+
+        public FallosAlGuardar(int fallos, Func<Exception> crear)
+        {
+            _restantes = fallos;
+            _crear = crear;
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            Llamadas++;
+            if (_restantes-- > 0)
+                throw _crear();
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    private static async Task<(ErpModaDbContext contexto, string nombreBd)> CrearContextoAsync(FallosAlGuardar interceptor)
+    {
+        var nombreBd = Guid.NewGuid().ToString();
+        await using (var semilla = new ErpModaDbContext(new DbContextOptionsBuilder<ErpModaDbContext>()
+                         .UseInMemoryDatabase(nombreBd).Options))
+        {
+            var producto = new Producto { Nombre = "Camiseta", Categoria = "Camisetas", PrecioBase = 45000m, Activo = true };
+            semilla.Productos.Add(producto);
+            semilla.Variantes.Add(new Variante { Producto = producto, Talla = "M", Color = "Negro", Sku = Sku, Stock = 0 });
+            await semilla.SaveChangesAsync();
+        }
+
+        var contexto = new ErpModaDbContext(new DbContextOptionsBuilder<ErpModaDbContext>()
+            .UseInMemoryDatabase(nombreBd)
+            .AddInterceptors(interceptor)
+            .Options);
+        return (contexto, nombreBd);
+    }
+
+    private static async Task<(int stock, int movimientos)> LeerBdAsync(string nombreBd)
+    {
+        await using var lectura = new ErpModaDbContext(new DbContextOptionsBuilder<ErpModaDbContext>()
+            .UseInMemoryDatabase(nombreBd).Options);
+        return ((await lectura.Variantes.SingleAsync()).Stock, await lectura.MovimientosStock.CountAsync());
+    }
+
+    [Fact]
+    public async Task ConflictoEncapsuladoEnDbUpdateException_SeReintentaYSumaUnaSolaVez()
+    {
+        var interceptor = new FallosAlGuardar(2, () => new DbUpdateException("conflicto", Pg("40001")));
+        var (contexto, nombreBd) = await CrearContextoAsync(interceptor);
+        await using var _ = contexto;
+        var idEscaneo = Guid.NewGuid();
+
+        var resultado = await new ProductosService(contexto).RegistrarEscaneoQrAsync(Sku, idEscaneo);
+
+        Assert.NotNull(resultado);
+        Assert.False(resultado.Duplicado);
+        Assert.Equal(3, interceptor.Llamadas); // 2 conflictos + el intento que guarda
+        Assert.Equal((1, 1), await LeerBdAsync(nombreBd));
+    }
+
+    [Fact]
+    public async Task ConflictoPersistente_SeRindeTrasElMaximoDeIntentosSinSumar()
+    {
+        var interceptor = new FallosAlGuardar(int.MaxValue, () => new DbUpdateException("conflicto", Pg("40001")));
+        var (contexto, nombreBd) = await CrearContextoAsync(interceptor);
+        await using var _ = contexto;
+
+        await Assert.ThrowsAsync<DbUpdateException>(
+            () => new ProductosService(contexto).RegistrarEscaneoQrAsync(Sku, Guid.NewGuid()));
+
+        Assert.Equal(ProductosService.MaxIntentosEscaneoQr, interceptor.Llamadas);
+        Assert.Equal((0, 0), await LeerBdAsync(nombreBd));
+    }
+
+    [Fact]
+    public async Task ErrorPermanente_NoSeReintenta()
+    {
+        var interceptor = new FallosAlGuardar(int.MaxValue,
+            () => new DbUpdateException("fk", Pg("23503", "movimientos_stock_variante_id_fkey")));
+        var (contexto, nombreBd) = await CrearContextoAsync(interceptor);
+        await using var _ = contexto;
+
+        await Assert.ThrowsAsync<DbUpdateException>(
+            () => new ProductosService(contexto).RegistrarEscaneoQrAsync(Sku, Guid.NewGuid()));
+
+        Assert.Equal(1, interceptor.Llamadas);
+        Assert.Equal((0, 0), await LeerBdAsync(nombreBd));
     }
 }

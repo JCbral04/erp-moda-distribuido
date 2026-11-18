@@ -127,13 +127,37 @@ namespace ErpModa.Api.Inventario.Services
         // solapan (40001) o se bloquean entre sí (40P01). Se reintenta SOLO esa
         // transacción, con pocos intentos y espera corta; cualquier otro error
         // (SKU inexistente, id duplicado con otro SKU, fallo de BD) se propaga.
-        private const int MaxIntentosEscaneoQr = 3;
+        public const int MaxIntentosEscaneoQr = 5;
 
         public static bool EsConflictoSerializacion(PostgresException ex) =>
             EsConflictoSerializacion(ex.SqlState);
 
         public static bool EsConflictoSerializacion(string sqlState) =>
             sqlState == "40001" || sqlState == "40P01";
+
+        // Índice único que impide registrar dos veces el mismo idEscaneo (schema.sql).
+        public const string IndiceUnicoEscaneoQr = "uq_mov_escaneo_qr";
+
+        // Decide si la excepción es un error transitorio que se resuelve repitiendo la
+        // transacción con el MISMO idEscaneo. Recorre las excepciones internas porque
+        // EF Core encapsula el error de PostgreSQL en DbUpdateException cuando ocurre
+        // en SaveChangesAsync; en una consulta o en CommitAsync llega directo.
+        // - 40001 / 40P01: conflicto de serialización o deadlock.
+        // - 23505 SOLO sobre uq_mov_escaneo_qr: otra petición con el mismo id hizo
+        //   commit primero; al repetir se encuentra su movimiento y se responde duplicado.
+        // Cualquier otro error (otro índice único, FK, CHECK, tabla inexistente...) es
+        // permanente y no se reintenta.
+        public static bool EsErrorTransitorioEscaneo(Exception ex)
+        {
+            for (var actual = ex; actual != null; actual = actual.InnerException)
+            {
+                if (actual is PostgresException pg)
+                    return EsConflictoSerializacion(pg)
+                        || (pg.SqlState == PostgresErrorCodes.UniqueViolation
+                            && pg.ConstraintName == IndiceUnicoEscaneoQr);
+            }
+            return false;
+        }
 
         public async Task<EscaneoQrResponseDto?> RegistrarEscaneoQrAsync(string sku, Guid idEscaneo)
         {
@@ -202,13 +226,16 @@ namespace ErpModa.Api.Inventario.Services
 
                     return resultado;
                 }
-                catch (PostgresException ex) when (intento < MaxIntentosEscaneoQr && EsConflictoSerializacion(ex))
+                catch (Exception ex) when (intento < MaxIntentosEscaneoQr && EsErrorTransitorioEscaneo(ex))
                 {
                     // La transacción se abortó: se descartan sus cambios y se repite
                     // completa con el MISMO idEscaneo. Si la primera llegó a commit,
                     // el reintento encuentra el motivo y responde duplicado.
                     _context.ChangeTracker.Clear();
-                    await Task.Delay(TimeSpan.FromMilliseconds(50d * (1 << (intento - 1))));
+                    // 50, 100, 200, 400 ms más un azar de hasta otro tanto: sin el azar,
+                    // las peticiones que chocaron vuelven a chocar al mismo tiempo.
+                    var esperaMs = 50d * Math.Pow(2, intento - 1);
+                    await Task.Delay(TimeSpan.FromMilliseconds(esperaMs + Random.Shared.NextDouble() * esperaMs));
                 }
             }
 

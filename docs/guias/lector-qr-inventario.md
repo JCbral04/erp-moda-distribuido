@@ -88,15 +88,21 @@ Para el envío, `ColaRegistro` decide qué hacer con cada respuesta:
 | Respuesta | Qué hace el trabajador |
 |---|---|
 | 200 | Registrado. Si `duplicado: true`, ya estaba registrado. |
-| Sin conexión, timeout, conexión cerrada sin respuesta, respuesta ilegible, 5xx, 408, 429 | **Reintenta con el mismo `idEscaneo`.** Espera 1 s, 2 s, 4 s… hasta 30 s entre intentos. |
+| Sin conexión, timeout, conexión cerrada sin respuesta, respuesta ilegible, **200 que no cumple el contrato** (no es un objeto, `idEscaneo` distinto al enviado, `stock` no entero o falta `duplicado`), 5xx, 408, 429 | **Reintenta con el mismo `idEscaneo`.** Espera 1 s, 2 s, 4 s… hasta 30 s entre intentos. El exponente se acota antes de calcular la espera, así que no desborda aunque el backend lleve caído miles de intentos. |
 | 400, 403, 404, 409 | No reintenta: el problema no se arregla repitiendo. Lo muestra como `NO REGISTRADO`. |
 
 - **Mientras el backend no responde:** no se insiste con los demás pendientes en la misma pasada, para no saturar al backend. La captura sigue a la velocidad de la cámara.
-- **Persistencia por defecto:** el archivo es `~/.erp_moda/qr_pendientes.json` (se crean los directorios). Se puede cambiar con `--pendientes OTRA_RUTA.json`. Cada escaneo se escribe **antes** de intentar enviarlo, con escritura atómica y un bloqueo por archivo que impide dos lectores sobre el mismo JSON. Solo se elimina del archivo cuando el backend confirma (200). Si el archivo no se puede abrir o está corrupto, el lector **termina con error** en lugar de continuar en un modo que pueda perder movimientos.
+- **Persistencia por defecto:** el archivo es `~/.erp_moda/qr_pendientes.json` (se crean los directorios). Se puede cambiar con `--pendientes OTRA_RUTA.json`. Cada escaneo se escribe **antes** de intentar enviarlo, con escritura atómica (temporal + `fsync` + `os.replace`) y un **bloqueo del sistema operativo** sobre `qr_pendientes.json.lock` (`msvcrt` en Windows, `fcntl` en Linux/macOS) que impide dos lectores sobre el mismo JSON. El sistema operativo suelta ese bloqueo si el proceso muere, incluso de forma abrupta, así que no quedan bloqueos huérfanos; el archivo `.lock` puede quedar en disco y no molesta. (La versión anterior comprobaba el PID con `os.kill(pid, 0)`, que en Windows no comprueba nada: equivale a `CTRL_C_EVENT` y no falla con un PID que ya terminó, así que tras un cierre abrupto el lector no volvía a arrancar.) Solo se elimina del archivo cuando el backend confirma (200). Si el archivo no se puede abrir o está corrupto, el lector **termina con error** en lugar de continuar en un modo que pueda perder movimientos.
 - **Recuperación al iniciar:** los pendientes se cargan automáticamente con su UUID original y se reintentan con el mismo trabajador. El JSON no contiene credenciales.
-- **Cierre seguro (`--espera-final`, 10 s por defecto):** se detiene la admisión de nuevos envíos, se permite terminar la petición en curso y se agotan los reintentos dentro de ese límite. Si queda algo sin confirmar, se muestra como `PENDIENTE` y permanece en disco con su id; se reanudará en el próximo arranque. En modo `--simular` no se persiste nada porque no se modifica el inventario.
+- **Cierre seguro (`--espera-final`, 10 s por defecto):** el trabajador usa ese plazo para reintentar pendientes y **no inicia ninguna petición después de vencido**. Si al vencer hay una petición en curso, la cola se detiene (no empieza otras) y se espera a que esa termine, como mucho el timeout HTTP (5 s). **El almacenamiento sigue bloqueado hasta que el trabajador ya no puede escribir en él**: `ColaRegistro.cerrar()` espera a que no quede ninguna petición en curso antes de soltar el bloqueo, y escribir el JSON sin el bloqueo es un error. Así una segunda instancia no puede abrir el archivo mientras la primera todavía lo usa. Lo que quede sin confirmar se muestra como `PENDIENTE` y permanece en disco con su id; se reanudará en el próximo arranque. En modo `--simular` no se persiste nada porque no se modifica el inventario.
+- **Supervisión del trabajador:** si el hilo HTTP termina por una excepción inesperada (por ejemplo, no se puede escribir el JSON de pendientes), guarda el error, detiene la cola y lo avisa por stderr. El bucle de captura lo comprueba en cada frame y **deja de capturar** con `TrabajadorDetenidoError`; `main()` termina con código 2. Nunca se sigue encolando escaneos sin nadie que los envíe. Los escaneos ya encolados siguen en el JSON con su id.
 
-El backend también trata los conflictos transitorios de PostgreSQL (`SQLSTATE 40001` y `40P01`) en la transacción del escaneo: reintenta **solo esa transacción**, hasta 3 veces con espera de 50/100 ms, manteniendo el mismo `idEscaneo`. Si el primer intento llegó a confirmar, el reintento obtiene `duplicado: true` y no suma otra unidad. Los errores permanentes no se ocultan.
+El backend también trata los errores transitorios de PostgreSQL en la transacción del escaneo (`ProductosService.EsErrorTransitorioEscaneo`): reintenta **solo esa transacción**, hasta 5 intentos con espera de 50, 100, 200 y 400 ms más un azar de hasta otro tanto (para que las peticiones que chocaron no vuelvan a chocar a la vez), manteniendo el mismo `idEscaneo`. Se consideran transitorios:
+
+- `40001` (conflicto de serialización) y `40P01` (deadlock), tanto si llegan directos como `PostgresException` (en una consulta o en el commit) como **encapsulados por EF Core en `DbUpdateException`** cuando ocurren en `SaveChangesAsync`: se recorre la cadena de excepciones internas.
+- `23505` **solo sobre `uq_mov_escaneo_qr`**: otra petición con el mismo id confirmó primero; al repetir se encuentra su movimiento y se responde `duplicado: true`.
+
+Cualquier otro error (otro índice único, clave foránea, `CHECK`, tabla inexistente…) es permanente: no se reintenta y llega como 500. Si se agotan los 5 intentos también se propaga, y el lector lo reintenta más tarde con el mismo id.
 
 ### 6. Cuándo una etiqueta cuenta como prenda nueva, y sus limitaciones físicas
 
@@ -172,7 +178,8 @@ Respuestas del endpoint:
 2. Si aparece `PENDIENTE: ... (id ...)`, el movimiento **no** se perdió: está en el JSON con su UUID. No borres ese archivo.
 3. Al volver a iniciar (con backend o sin él), el lector imprime `Recuperados N escaneos pendientes de ...` y los reenvía con el mismo id. Solo cuando el backend responde 200 se elimina la entrada.
 4. Para migrar a otra máquina, copia el JSON; para cambiar de ruta usa `--pendientes NUEVA_RUTA` y asegúrate de que no haya otro lector usando la anterior.
-5. Si el almacenamiento no se puede crear/escribir, el proceso termina con `ERROR: ...` y código 2. Corrige permisos o indica otra ruta antes de volver a escanear.
+5. Si el almacenamiento no se puede crear/escribir, el proceso termina con `ERROR: ...` y código 2. Corrige permisos o indica otra ruta antes de volver a escanear. Lo mismo pasa si el trabajador HTTP se detiene por un error inesperado: la captura se corta en lugar de seguir sin registrar.
+6. Si al cerrar aparece `aviso: venció el plazo de cierre con una petición en curso`, el lector todavía está esperando esa petición (como mucho el timeout HTTP) y mantiene el bloqueo del JSON. No abras otra instancia hasta que termine: si lo intentas, fallará con `Otro lector está usando el almacenamiento`.
 
 ## Verificación
 
@@ -204,6 +211,44 @@ Qué cubren los tests del lector (`ai/tests/test_deteccion.py`):
 | Extremo a extremo con el backend simulado | Respuesta perdida → reintento → `duplicado`, stock +1; 500 y 503 → registrado al tercer intento, stock +1; dos prendas iguales → dos ids, stock +2; backend caído → queda pendiente |
 | `DesacoplamientoHttpTests` | Latencias de 3 s y 5 s sin bloquear la captura; 500 + respuesta perdida con un solo UUID; tres QR con petición pendiente; un solo trabajador por cola |
 | `PersistenciaPorDefectoTests` | Cierre con pendientes y recuperación con el mismo id; ruta por defecto tras reinicio de `main()`; bloqueo entre dos instancias |
+
+### Tercera ronda de revisión (después de `3ef0656`)
+
+Ejecutado realmente en este equipo (Windows, Python 3.13 y OpenCV 5.0.0; .NET 10 con `DOTNET_ROLL_FORWARD=Major`):
+
+| Prueba | Resultado |
+|---|---|
+| Tests del lector (`python -m unittest discover -s ai/tests -v`) | **62/62** en verde (52 anteriores + 10 nuevos) |
+| Tests del backend sin HTTP | **112/112** en verde. Los tests HTTP con `WebApplicationFactory` no corren en este equipo por el problema de .NET 10 (`PipeWriter.UnflushedBytes`, también en `main`); corren en CI con .NET 8. |
+
+Contra la API real (Kestrel en `Production`, dos instancias: sin `RedesPermitidas` y con `127.0.0.1`) y PostgreSQL 16 en Docker con `docs/inventario/schema.sql` (incluido `uq_mov_escaneo_qr`) y `docs/ventas/schema.sql`:
+
+| Prueba | Resultado |
+|---|---|
+| Contrato del endpoint | 403 sin redes permitidas (sin sumar); 8 cuerpos inválidos → 400 sin stack trace; 200 / `duplicado` / 409 / 404 según la tabla de respuestas. |
+| Venta | Crear y confirmar descuenta 1; un reintento posterior de un escaneo ya registrado responde `duplicado` sin cambiar el stock. |
+| Ráfagas simultáneas, **comparando con `3ef0656`** (misma base, mismo script) | Ver la tabla siguiente. |
+| Forma real del conflicto | El log de la API muestra los conflictos como `DbUpdateException` con una `PostgresException` interna `SqlState: 40001`: es el caso del hallazgo 3, que `3ef0656` no reintentaba. |
+| Consistencia de la base al final | 0 `motivo` de `deteccion_ia` repetidos; el stock de cada variante es igual a la suma de sus movimientos. |
+| Lector contra la API real | Video con 3 QR → 3 registrados. Dos lectores a la vez sobre el mismo JSON: el segundo termina con `Otro lector está usando el almacenamiento` y código 2. Con el backend caído el escaneo queda pendiente; al reiniciar con el backend arriba se recupera, se registra con el mismo id (1 movimiento en la base) y el JSON se borra. |
+
+| Ráfaga | `3ef0656` (solo `PostgresException`, 3 intentos) | Esta versión (`DbUpdateException` incluida, 5 intentos con azar) |
+|---|---|---|
+| 50 ids distintos a la vez | 49 de 50 responden 500 | 11 de 50 responden 500 |
+| 100 ids distintos a la vez | 98 de 100 responden 500 | 52 de 100 responden 500 |
+| 50 veces el mismo id a la vez | 48 de 50 responden 500 | 0 responden 500; stock +1 |
+| 100 veces el mismo id a la vez | 94 de 100 responden 500 | 0 responden 500; stock +1 |
+| 20 ids distintos a la vez (prueba de la ronda anterior) | — | 1 de 20 responde 500 (antes de tener reintentos en el backend: 18 de 20) |
+
+En todas las ráfagas, al reenviar los fallidos con su mismo id el stock terminó subiendo exactamente una unidad por id y ningún escaneo quedó sin confirmar. Con 100 peticiones de golpe todavía hay 500 por agotar los 5 intentos: es una carga muy por encima de la de una cámara, y el lector los reintenta con el mismo id.
+
+Casos nuevos:
+
+| Grupo | Casos |
+|---|---|
+| `CierreConPeticionBloqueadaTests` | Petición bloqueada a propósito + cierre con plazo menor: el cierre espera, el almacenamiento sigue bloqueado, una segunda instancia falla, el JSON conserva los dos ids y no se inicia ninguna petición tras el plazo; al soltar la petición, la segunda instancia recupera ambos ids y registra uno por id (el bloqueado como `duplicado`). `detener()` impide iniciar peticiones. No se puede agregar a una cola cerrada. Un proceso hijo que toma el bloqueo y muere sin cerrar no deja el bloqueo tomado. |
+| `SupervisionTrabajadorTests` | 1.100 intentos con reloj falso sin desbordar y con el mismo id; 5 cuerpos 200 con JSON válido pero estructura incorrecta → reintentable; la respuesta ambigua conserva el UUID; una excepción inesperada del trabajador corta la captura y deja el pendiente en disco; un error de escritura del JSON en el trabajador corta la captura (`TrabajadorDetenidoError` causado por `OSError`); `main()` devuelve 2. |
+| `EscaneoQrReintentosTests` (backend) | Clasificación con 10 casos: 40001/40P01 directos, dentro de `DbUpdateException` y anidados; 23505 solo sobre `uq_mov_escaneo_qr`; 23505 de otro índice, 23503, 42P01 y excepciones sin `PostgresException` no se reintentan. Con un interceptor que falla en `SaveChangesAsync`: 2 conflictos encapsulados → registrado al tercer intento con +1 y un movimiento; conflicto persistente → se rinde tras 5 intentos sin sumar; error permanente → 1 solo intento. |
 
 ## Pendiente
 

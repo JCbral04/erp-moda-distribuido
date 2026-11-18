@@ -1,17 +1,18 @@
 # TLS/HTTPS por entorno — erp-moda-distribuido
 
 Issue #60. Documenta cómo se sirve HTTPS, qué certificado se valida en cada
-entorno y la comunicación backend ↔ microservicio IA. Actualizado según la
-review del PR #93: configuración real del compose (base prod / override dev),
-HSTS explícito y ForwardedHeaders.
+entorno y la comunicación backend ↔ microservicio IA. Actualizado según las
+reviews del PR #93: configuración real del compose (base prod / override dev),
+HSTS explícito, ForwardedHeaders y puertos ligados a loopback en dev.
 
 ## 1. Desarrollo local (docker compose / dotnet run)
 
 - Comando: `docker compose up` — aplica `docker-compose.yml` +
-  `docker-compose.override.yml` automáticamente. El override publica al host:
-  - `5000` → API (backend `5000:8080`), `Development` + Swagger activo.
-  - `5432` → Postgres y `6379` → Redis (acceso local con cliente SQL).
-  - `8000` → microservicio IA (depuración).
+  `docker-compose.override.yml` automáticamente. El override publica al host,
+  **todos ligados a 127.0.0.1** (sin exposición a la LAN):
+  - `127.0.0.1:5000` → API (backend `5000:8080`), `Development` + Swagger activo.
+  - `127.0.0.1:5432` → Postgres y `127.0.0.1:6379` → Redis (acceso local).
+  - `127.0.0.1:8000` → microservicio IA (depuración).
 - `ASPNETCORE_ENVIRONMENT=Development` viene del override; Swagger UI activo.
 - **Supabase (BD):** TLS siempre. `SSL Mode=Require` con el certificado TLS
   válido que sirve Supabase. **Nunca** `Trust Server Certificate=true`.
@@ -33,11 +34,12 @@ HSTS explícito y ForwardedHeaders.
   HSTS activo (cabecera `Strict-Transport-Security`, max-age 30 días).
 - Terminación TLS en el reverse proxy (nginx, Cloudflare, ELB) con certificado
   público válido (Let's Encrypt u otro CA reconocido); redirige HTTP → HTTPS.
-- **ForwardedHeaders obligatorio**: `UseForwardedHeaders()` acepta
-  `X-Forwarded-For`/`X-Forwarded-Proto` **solo del proxy de confianza**
-  (`KnownNetworks`/`KnownProxies` limpios; única IP en `ProxyTrustedIP`,
-  default `127.0.0.1`). Sin esto, el esquema percibido y `UseHttpsRedirection`
-  fallan detrás del proxy. Configurar la IP real del proxy por entorno.
+- **ForwardedHeaders obligatorio**: `UseForwardedHeaders()` (registrado antes
+  de `UseHsts`/`UseHttpsRedirection`) acepta `X-Forwarded-For`/
+  `X-Forwarded-Proto` **solo del proxy de confianza** (`KnownNetworks`/
+  `KnownProxies` limpios; única IP en `ProxyTrustedIP`, default `127.0.0.1`).
+  Sin esto, el esquema percibido falla detrás del proxy y HSTS no emite el
+  header. Configurar la IP real del proxy por entorno.
 - **Opciones HSTS reales** (`AddHsts` en `Program.cs`): `MaxAge = 30 días`.
   `Preload = false`: el envío a la lista HSTS preload es decisión del dominio
   del despliegue y **no es revocable**. `IncludeSubdomains = false`: el ERP se
@@ -48,10 +50,15 @@ HSTS explícito y ForwardedHeaders.
 
 ## 4. Comunicación backend ↔ microservicio IA
 
-- **Solo red Docker interna** (`erp-net`): el servicio `ia` no publica puerto
-  al host en ninguna configuración (ni base ni override — solo el backend lo
-  llama por `http://ia:8000`, variable `IaService__BaseUrl`).
-- En dev, el override publica `8000:8000` solo para depuración del host.
+- En la configuración base (`docker-compose.yml`, usada en producción), el
+  servicio `ia` **no publica ningún puerto al host**. Producción usa
+  únicamente el compose base (`docker compose -f docker-compose.yml up -d`),
+  sin override.
+- En desarrollo local, `docker-compose.override.yml` publica
+  `127.0.0.1:8000:8000` **solo para depuración** desde el equipo local.
+- El backend se comunica con IA por la red Docker interna `erp-net`
+  (`http://ia:8000`, variable `IaService__BaseUrl`), con o sin puerto
+  publicado en dev.
 - HTTP en red interna de un solo host: aceptable (issue #60, alcance). Si en
   el futuro `ia` se expone fuera del compose (otro host), ese tráfico debe
   pasar a TLS.

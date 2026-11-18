@@ -1,0 +1,47 @@
+# Backup semanal de PostgreSQL con pg_dump (issue #63).
+# Domingos 03:00 UTC + manual. El artifact contiene SOLO el dump cifrado
+# con GPG (passphrase en secret): los datos de la BD nunca quedan publicos.
+name: backup-db
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backup de la BD (cifrado GPG)
+        env:
+          # Credenciales via variables estandar de libpq, nunca argumentos.
+          PGHOST: ${{ secrets.SUPABASE_DB_HOST }}
+          PGPORT: ${{ secrets.SUPABASE_DB_PORT }}
+          PGUSER: ${{ secrets.SUPABASE_DB_USER }}
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          PGDATABASE: ${{ secrets.SUPABASE_DB_NAME }}
+          PGSSLMODE: require
+          GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+        run: ./scripts/backup-db.sh backup.sql.gz
+      - name: Verificar cifrado antes de publicar
+        env:
+          GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+        run: |
+          # Nunca publicar un backup plano: el .gpg debe existir y validar.
+          test -n "${GPG_PASSPHRASE:-}" || { echo "ERROR: passphrase de backup ausente"; exit 1; }
+          test -f backup.sql.gz.gpg || { echo "ERROR: backup cifrado ausente"; exit 1; }
+          test ! -f backup.sql.gz || { echo "ERROR: backup plano presente, abortando"; exit 1; }
+          printf '%s' "$GPG_PASSPHRASE" | gpg --batch --decrypt --passphrase-fd 0 -o /dev/null backup.sql.gz.gpg \
+            || { echo "ERROR: el backup cifrado no valida con la passphrase"; exit 1; }
+      - name: Subir artifact (unicamente el archivo cifrado)
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ github.run_id }}
+          path: backup.sql.gz.gpg
+          if-no-files-found: error
+          retention-days: 30

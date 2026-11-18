@@ -109,21 +109,50 @@ namespace ErpModa.Api.Inventario.Services
             return true;
         }
 
+        // Prefijo del motivo de los movimientos del lector de QR. El motivo lleva el id
+        // del escaneo y sirve de clave de idempotencia (índice único uq_mov_escaneo_qr).
+        public const string PrefijoMotivoEscaneoQr = "Escaneo QR ";
+
+        public static string MotivoEscaneoQr(Guid idEscaneo) => PrefijoMotivoEscaneoQr + idEscaneo.ToString("D");
+
         // Entrada de una unidad al escanear el QR de la etiqueta (el QR contiene el SKU).
         // Registra un movimiento tipo='deteccion_ia', cantidad=+1; la salida la hace
         // Ventas al confirmar la venta (movimiento tipo='venta', cantidad<0).
+        // Es idempotente por idEscaneo: si el lector reintenta un escaneo que ya se
+        // registró (p. ej. se perdió la respuesta), devuelve el registro con
+        // Duplicado = true y no suma otra unidad.
         // Devuelve null si no existe una variante con ese SKU.
-        public async Task<EscaneoQrResponseDto?> RegistrarEscaneoQrAsync(string sku)
+        public async Task<EscaneoQrResponseDto?> RegistrarEscaneoQrAsync(string sku, Guid idEscaneo)
         {
             if (string.IsNullOrWhiteSpace(sku))
                 throw new ArgumentException("El SKU es obligatorio.");
+            if (idEscaneo == Guid.Empty)
+                throw new ArgumentException("El id del escaneo es obligatorio.");
 
             // El lector puede entregar el texto del QR con espacios o saltos de línea.
             var skuNormalizado = sku.Trim();
+            var motivo = MotivoEscaneoQr(idEscaneo);
 
             EscaneoQrResponseDto? resultado = null;
             await EjecutarAtomicoAsync(async () =>
             {
+                // Se busca dentro de la misma transacción Serializable que el incremento:
+                // dos peticiones simultáneas con el mismo id no pueden registrar ambas.
+                var previo = await _context.MovimientosStock
+                    .Include(m => m.Variante!)
+                    .ThenInclude(v => v.Producto)
+                    .FirstOrDefaultAsync(m => m.Tipo == "deteccion_ia" && m.Motivo == motivo);
+
+                if (previo?.Variante != null)
+                {
+                    if (previo.Variante.Sku != skuNormalizado)
+                        throw new EscaneoQrConflictoException(
+                            $"El escaneo {idEscaneo} ya se registró para el SKU '{previo.Variante.Sku}'.");
+
+                    resultado = CrearRespuestaEscaneo(previo.Variante, idEscaneo, duplicado: true);
+                    return;
+                }
+
                 var variante = await _context.Variantes
                     .Include(v => v.Producto)
                     .FirstOrDefaultAsync(v => v.Sku == skuNormalizado);
@@ -143,7 +172,7 @@ namespace ErpModa.Api.Inventario.Services
                     Cantidad = 1,
                     ReferenciaTipo = null,
                     ReferenciaId = null,
-                    Motivo = "Entrada por escaneo de QR",
+                    Motivo = motivo,
                     Usuario = "ia-qr",
                     Confianza = 1m,
                     CreadoEn = DateTime.UtcNow
@@ -151,18 +180,25 @@ namespace ErpModa.Api.Inventario.Services
 
                 await _context.SaveChangesAsync();
 
-                resultado = new EscaneoQrResponseDto
-                {
-                    VarianteId = variante.Id,
-                    Sku = variante.Sku,
-                    Producto = variante.Producto?.Nombre ?? string.Empty,
-                    Talla = variante.Talla,
-                    Color = variante.Color,
-                    Stock = variante.Stock
-                };
+                resultado = CrearRespuestaEscaneo(variante, idEscaneo, duplicado: false);
             });
 
             return resultado;
+        }
+
+        private static EscaneoQrResponseDto CrearRespuestaEscaneo(Variante variante, Guid idEscaneo, bool duplicado)
+        {
+            return new EscaneoQrResponseDto
+            {
+                IdEscaneo = idEscaneo,
+                VarianteId = variante.Id,
+                Sku = variante.Sku,
+                Producto = variante.Producto?.Nombre ?? string.Empty,
+                Talla = variante.Talla,
+                Color = variante.Color,
+                Stock = variante.Stock,
+                Duplicado = duplicado
+            };
         }
 
         // Mismo patrón que VentasService: en PostgreSQL la lectura y el incremento del

@@ -101,7 +101,7 @@ Microservicio independiente en Python que usa visión por computador para detect
 
 | Módulo origen | Módulo destino | Qué se envía | Cuándo |
 |:---|:---|:---|:---|
-| IA | Inventario | SKU leído del QR (`POST /api/productos/escaneo-qr`); Inventario suma +1 y registra `deteccion_ia` con confianza 1 | Escaneo de la etiqueta QR |
+| IA | Inventario | SKU leído del QR + `idEscaneo` único (`POST /api/productos/escaneo-qr`); Inventario suma +1 y registra `deteccion_ia` con confianza 1; un reintento con el mismo id no vuelve a sumar | Escaneo de la etiqueta QR |
 | Inventario | IA | Catálogo de productos para clasificación | Al iniciar o actualizar |
 
 ---

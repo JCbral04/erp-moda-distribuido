@@ -1,114 +1,133 @@
-"""Prueba de concepto: deteccion de presencia de prendas por camara (issue #7).
+"""Lector de QR de prendas: cada QR escaneado suma una unidad al stock.
 
-Vision clasica con OpenCV: sustraccion de fondo MOG2 para detectar la entrada
-de la prenda y un tracker MIL para seguirla mientras permanece en el encuadre.
-No clasifica el tipo de prenda, solo detecta presencia.
+La etiqueta de cada prenda lleva un QR cuyo contenido es el SKU de la variante
+(p. ej. "CAM-NEG-M"). Al leerlo, el lector llama al backend
+(POST /api/productos/escaneo-qr) y este registra la entrada de +1 unidad como
+movimiento tipo 'deteccion_ia'. La salida del stock la hace el modulo de Ventas
+al confirmar la venta.
+
+Reemplaza la prueba de concepto de deteccion por sustraccion de fondo (issue #7).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-AREA_MINIMA_RATIO = 0.03
-# Salir de la deteccion cuesta mas que entrar: sin esta histeresis el estado
-# oscila cuando area_ratio se queda rondando el umbral de entrada.
-AREA_SALIDA_RATIO = 0.015
-HISTORIAL = 30
-UMBRAL_VARIANZA = 16.0
-# Tras el calentamiento el fondo se congela (tasa 0): si MOG2 sigue aprendiendo,
-# absorbe la prenda quieta en el modelo y la deteccion se apaga sola.
-TASA_APRENDIZAJE = 0.0
-INTERVALO_EVIDENCIA = 15
+BACKEND_URL = "http://localhost:5000"
+RUTA_ESCANEO = "/api/productos/escaneo-qr"
+# Una misma etiqueta suele quedarse varios frames frente a la camara: solo se
+# registra una vez, y vuelve a contar cuando lleva este numero de frames sin verse.
+FRAMES_LIBERACION = 15
+TIMEOUT_SEGUNDOS = 5.0
 
 
-def crear_subtractor(
-    historial: int = HISTORIAL, umbral_varianza: float = UMBRAL_VARIANZA
-) -> cv2.BackgroundSubtractorMOG2:
-    return cv2.createBackgroundSubtractorMOG2(
-        history=historial, varThreshold=umbral_varianza, detectShadows=False
+def leer_qr(
+    frame: np.ndarray, detector: cv2.QRCodeDetector
+) -> tuple[str | None, np.ndarray | None]:
+    """Devuelve (texto, esquinas) del QR del frame, o (None, None) si no hay uno legible."""
+    texto, puntos, _ = detector.detectAndDecode(frame)
+    texto = texto.strip() if texto else ""
+    if not texto:
+        return None, None
+    return texto, puntos
+
+
+class ControlEscaneos:
+    """Decide cuando una lectura cuenta como un escaneo nuevo.
+
+    Un QR cuenta al aparecer. Mientras siga en el encuadre no vuelve a contar;
+    tiene que desaparecer durante `frames_liberacion` frames seguidos (o ser
+    reemplazado por otro QR) para que la misma etiqueta pueda sumar otra unidad.
+    """
+
+    def __init__(self, frames_liberacion: int = FRAMES_LIBERACION) -> None:
+        self.frames_liberacion = frames_liberacion
+        self._actual: str | None = None
+        self._frames_sin_ver = 0
+
+    def procesar(self, texto: str | None) -> str | None:
+        """Recibe la lectura del frame; devuelve el SKU si es un escaneo nuevo."""
+        if texto is None:
+            if self._actual is not None:
+                self._frames_sin_ver += 1
+                if self._frames_sin_ver >= self.frames_liberacion:
+                    self._actual = None
+            return None
+
+        self._frames_sin_ver = 0
+        if texto == self._actual:
+            return None
+        self._actual = texto
+        return texto
+
+
+@dataclass
+class ResultadoRegistro:
+    ok: bool
+    estado_http: int | None
+    detalle: str
+    stock: int | None = None
+
+
+def registrar_en_backend(
+    sku: str, backend_url: str = BACKEND_URL, timeout: float = TIMEOUT_SEGUNDOS
+) -> ResultadoRegistro:
+    """Envia el SKU al backend. Nunca lanza: los fallos se devuelven en el resultado."""
+    url = backend_url.rstrip("/") + RUTA_ESCANEO
+    cuerpo = json.dumps({"sku": sku}).encode("utf-8")
+    peticion = urllib.request.Request(
+        url, data=cuerpo, method="POST", headers={"Content-Type": "application/json"}
     )
+    try:
+        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
+            datos = json.loads(respuesta.read().decode("utf-8"))
+            return ResultadoRegistro(
+                ok=True,
+                estado_http=respuesta.status,
+                detalle=f"{datos.get('producto', '')} {datos.get('talla', '')}/{datos.get('color', '')}".strip(),
+                stock=datos.get("stock"),
+            )
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            detalle = "SKU no registrado en inventario"
+        elif error.code == 400:
+            detalle = "contenido del QR no valido"
+        else:
+            detalle = f"error del backend ({error.code})"
+        return ResultadoRegistro(ok=False, estado_http=error.code, detalle=detalle)
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        return ResultadoRegistro(ok=False, estado_http=None, detalle=f"backend no disponible: {error}")
 
 
-def crear_tracker() -> cv2.Tracker:
-    """MIL es el unico tracker de OpenCV 5 que no necesita pesos externos.
-
-    CSRT y KCF viven en opencv-contrib y los demas (DaSiamRPN, Nano, Vit) exigen
-    un archivo de modelo; ninguno de los dos esta disponible en este repo.
-    """
-    return cv2.TrackerMIL.create()
-
-
-def detectar_prenda_en_frame(
-    frame: np.ndarray,
-    subtractor: cv2.BackgroundSubtractorMOG2,
-    area_minima_ratio: float = AREA_MINIMA_RATIO,
-    tasa_aprendizaje: float = -1.0,
-) -> tuple[bool, float, tuple[int, int, int, int] | None]:
-    """Devuelve (detectado, area_ratio, bbox).
-
-    area_ratio es el area del contorno mas grande dividida por el area del frame.
-    Es una heuristica geometrica, no la "confianza" calibrada de RN-003.
-    """
-    mascara = subtractor.apply(frame, learningRate=tasa_aprendizaje)
-    kernel = np.ones((5, 5), np.uint8)
-    mascara = cv2.morphologyEx(mascara, cv2.MORPH_OPEN, kernel)
-    mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, kernel)
-
-    contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contornos:
-        return False, 0.0, None
-
-    mayor = max(contornos, key=cv2.contourArea)
-    alto, ancho = frame.shape[:2]
-    area_ratio = cv2.contourArea(mayor) / float(alto * ancho)
-    if area_ratio < area_minima_ratio:
-        return False, area_ratio, None
-
-    x, y, w, h = cv2.boundingRect(mayor)
-    return True, area_ratio, (x, y, w, h)
-
-
-def anotar_frame(
-    frame: np.ndarray,
-    bbox: tuple[int, int, int, int] | None,
-    area_ratio: float,
-    etiqueta: str = "",
-) -> np.ndarray:
+def anotar_frame(frame: np.ndarray, puntos: np.ndarray | None, etiqueta: str) -> np.ndarray:
     anotado = frame.copy()
-    if bbox is not None:
-        x, y, w, h = bbox
-        cv2.rectangle(anotado, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    texto = f"{etiqueta} area_ratio={area_ratio:.4f}".strip()
-    cv2.putText(
-        anotado, texto, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
-    )
+    if puntos is not None:
+        cv2.polylines(anotado, [puntos.astype(np.int32).reshape(-1, 1, 2)], True, (0, 255, 0), 2)
+    cv2.putText(anotado, etiqueta, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     return anotado
 
 
 def procesar_video(
     fuente: int | str,
-    area_minima_ratio: float = AREA_MINIMA_RATIO,
-    area_salida_ratio: float = AREA_SALIDA_RATIO,
-    historial: int = HISTORIAL,
-    umbral_varianza: float = UMBRAL_VARIANZA,
-    tasa_aprendizaje: float = TASA_APRENDIZAJE,
+    backend_url: str = BACKEND_URL,
+    simular: bool = False,
+    frames_liberacion: int = FRAMES_LIBERACION,
     directorio_salida: Path | None = None,
     max_frames: int | None = None,
-    frames_confirmacion: int = 3,
-    intervalo_evidencia: int = INTERVALO_EVIDENCIA,
 ) -> list[dict]:
-    """Recorre la fuente de video y registra la presencia de una prenda.
+    """Lee la fuente de video y registra cada QR nuevo. Devuelve los escaneos realizados.
 
-    Los primeros `historial` frames aprenden el fondo (el encuadre debe estar
-    vacio). Despues, MOG2 detecta la entrada de la prenda y el tracker la sigue
-    hasta que la pierde o el primer plano cae por debajo de `area_salida_ratio`.
-    Se imprime una linea por transicion y, mientras hay prenda, se guarda un
-    frame anotado cada `intervalo_evidencia` frames.
+    Con `simular=True` no se llama al backend: sirve para probar la lectura sin API.
     """
     captura = cv2.VideoCapture(fuente)
     if not captura.isOpened():
@@ -117,37 +136,10 @@ def procesar_video(
     if directorio_salida is not None:
         directorio_salida.mkdir(parents=True, exist_ok=True)
 
-    subtractor = crear_subtractor(historial, umbral_varianza)
-    eventos: list[dict] = []
-    presente = False
-    tracker: cv2.Tracker | None = None
-    candidatos = 0
+    detector = cv2.QRCodeDetector()
+    control = ControlEscaneos(frames_liberacion)
+    escaneos: list[dict] = []
     numero_frame = 0
-    ultima_evidencia = 0
-
-    def guardar_evidencia(frame, bbox, area_ratio, sufijo) -> None:
-        if directorio_salida is None:
-            return
-        ruta = directorio_salida / f"frame_{numero_frame:05d}_{sufijo}.jpg"
-        if not cv2.imwrite(str(ruta), anotar_frame(frame, bbox, area_ratio, sufijo)):
-            print(f"  aviso: no se pudo escribir la evidencia {ruta}")
-
-    def registrar_transicion(detectado, area_ratio, bbox) -> None:
-        marca = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        eventos.append(
-            {
-                "frame": numero_frame,
-                "timestamp": marca,
-                "detectado": detectado,
-                "area_ratio": round(area_ratio, 4),
-                "bbox": bbox,
-            }
-        )
-        etiqueta = "PRENDA DETECTADA" if detectado else "sin prenda"
-        print(
-            f"[{marca}] frame {numero_frame}: {etiqueta} "
-            f"(area_ratio={area_ratio:.4f})"
-        )
 
     try:
         while max_frames is None or numero_frame < max_frames:
@@ -156,60 +148,42 @@ def procesar_video(
                 break
             numero_frame += 1
 
-            calentando = numero_frame <= historial
-            detectado, area_ratio, bbox = detectar_prenda_en_frame(
-                frame,
-                subtractor,
-                area_minima_ratio,
-                tasa_aprendizaje=-1.0 if calentando else tasa_aprendizaje,
-            )
-            if calentando:
+            texto, puntos = leer_qr(frame, detector)
+            sku = control.procesar(texto)
+            if sku is None:
                 continue
 
-            if not presente:
-                # Se exige ver la prenda varias veces seguidas para no entrar en
-                # deteccion por el ruido de un frame suelto.
-                candidatos = candidatos + 1 if detectado else 0
-                if candidatos < frames_confirmacion:
-                    continue
-                tracker = crear_tracker()
-                tracker.init(frame, bbox)
-                presente = True
-                candidatos = 0
-                ultima_evidencia = numero_frame
-                registrar_transicion(True, area_ratio, bbox)
-                guardar_evidencia(frame, bbox, area_ratio, "deteccion")
-                continue
-
-            # Con la prenda ya detectada manda el tracker: MOG2 solo decide
-            # cuando se considera que la prenda salio del encuadre.
-            seguido, bbox_seguido = tracker.update(frame)
-            if seguido:
-                bbox = tuple(int(valor) for valor in bbox_seguido)
-
-            if not seguido or area_ratio < area_salida_ratio:
-                candidatos += 1
+            marca = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if simular:
+                resultado = ResultadoRegistro(ok=True, estado_http=None, detalle="simulado")
             else:
-                candidatos = 0
+                resultado = registrar_en_backend(sku, backend_url)
 
-            if candidatos >= frames_confirmacion:
-                presente = False
-                tracker = None
-                candidatos = 0
-                registrar_transicion(False, area_ratio, None)
-                guardar_evidencia(frame, None, area_ratio, "fin")
-                continue
+            escaneos.append(
+                {
+                    "frame": numero_frame,
+                    "timestamp": marca,
+                    "sku": sku,
+                    "ok": resultado.ok,
+                    "estado_http": resultado.estado_http,
+                    "stock": resultado.stock,
+                }
+            )
+            estado = "REGISTRADO" if resultado.ok else "NO REGISTRADO"
+            stock = f", stock={resultado.stock}" if resultado.stock is not None else ""
+            print(f"[{marca}] frame {numero_frame}: QR {sku!r} -> {estado} ({resultado.detalle}{stock})")
 
-            if intervalo_evidencia and numero_frame - ultima_evidencia >= intervalo_evidencia:
-                ultima_evidencia = numero_frame
-                guardar_evidencia(frame, bbox, area_ratio, "seguimiento")
+            if directorio_salida is not None:
+                ruta = directorio_salida / f"qr_{numero_frame:05d}.jpg"
+                if not cv2.imwrite(str(ruta), anotar_frame(frame, puntos, f"{sku} {estado}")):
+                    print(f"  aviso: no se pudo escribir la evidencia {ruta}")
     except KeyboardInterrupt:
         print("\nInterrumpido por el usuario.")
     finally:
         captura.release()
 
     print(f"Frames procesados: {numero_frame}")
-    return eventos
+    return escaneos
 
 
 def _parsear_fuente(valor: str) -> int | str:
@@ -223,43 +197,36 @@ def main(argv: list[str] | None = None) -> int:
         default="0",
         help="Indice de camara (0, 1, ...) o ruta a un archivo de video",
     )
-    parser.add_argument("--area-minima-ratio", type=float, default=AREA_MINIMA_RATIO)
-    parser.add_argument("--area-salida-ratio", type=float, default=AREA_SALIDA_RATIO)
-    parser.add_argument("--historial", type=int, default=HISTORIAL)
-    parser.add_argument("--umbral-varianza", type=float, default=UMBRAL_VARIANZA)
     parser.add_argument(
-        "--tasa-aprendizaje",
-        type=float,
-        default=TASA_APRENDIZAJE,
-        help="Adaptacion del fondo despues del calentamiento (0 = congelado)",
+        "--backend",
+        default=os.environ.get("BACKEND_URL", BACKEND_URL),
+        help="URL base del backend (por defecto $BACKEND_URL o http://localhost:5000)",
     )
+    parser.add_argument(
+        "--simular",
+        action="store_true",
+        help="Solo lee los QR, sin llamar al backend",
+    )
+    parser.add_argument("--frames-liberacion", type=int, default=FRAMES_LIBERACION)
     parser.add_argument(
         "--salida",
         type=Path,
         default=None,
-        help="Carpeta donde guardar los frames anotados",
-    )
-    parser.add_argument(
-        "--intervalo-evidencia",
-        type=int,
-        default=INTERVALO_EVIDENCIA,
-        help="Cada cuantos frames guardar evidencia mientras hay prenda (0 = solo transiciones)",
+        help="Carpeta donde guardar el frame anotado de cada escaneo",
     )
     parser.add_argument("--max-frames", type=int, default=None)
     args = parser.parse_args(argv)
 
-    eventos = procesar_video(
+    escaneos = procesar_video(
         fuente=_parsear_fuente(args.fuente),
-        area_minima_ratio=args.area_minima_ratio,
-        area_salida_ratio=args.area_salida_ratio,
-        historial=args.historial,
-        umbral_varianza=args.umbral_varianza,
-        tasa_aprendizaje=args.tasa_aprendizaje,
+        backend_url=args.backend,
+        simular=args.simular,
+        frames_liberacion=args.frames_liberacion,
         directorio_salida=args.salida,
         max_frames=args.max_frames,
-        intervalo_evidencia=args.intervalo_evidencia,
     )
-    print(f"Transiciones registradas: {len(eventos)}")
+    registrados = sum(1 for e in escaneos if e["ok"])
+    print(f"Escaneos: {len(escaneos)} (registrados: {registrados})")
     return 0
 
 

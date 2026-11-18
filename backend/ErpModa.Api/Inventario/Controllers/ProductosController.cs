@@ -61,6 +61,23 @@ namespace ErpModa.Api.Inventario.Controllers
             }
         }
 
+        // Lo llama el lector de QR (ai/deteccion.py): suma una unidad al stock de la variante.
+        [HttpPost("escaneo-qr")]
+        public async Task<ActionResult<EscaneoQrResponseDto>> RegistrarEscaneoQr([FromBody] EscaneoQrDto escaneoDto)
+        {
+            try
+            {
+                var result = await _service.RegistrarEscaneoQrAsync(escaneoDto.Sku);
+                if (result == null)
+                    return NotFound($"No existe una variante con SKU '{escaneoDto.Sku.Trim()}'.");
+                return Ok(result);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {

@@ -9,5 +9,6 @@ namespace ErpModa.Api.Inventario.Interfaces
         Task<ProductoResponseDto> CreateAsync(CrearProductoDto crearDto);
         Task<ProductoResponseDto?> UpdateAsync(int id, ActualizarProductoDto actualizarDto);
         Task<bool> DeleteAsync(int id);
+        Task<EscaneoQrResponseDto?> RegistrarEscaneoQrAsync(string sku);
     }
 }

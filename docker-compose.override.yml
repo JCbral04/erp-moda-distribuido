@@ -1,0 +1,7 @@
+# Solo desarrollo local: docker compose up lo aplica automaticamente.
+# Produccion: docker compose -f docker-compose.yml up -d (sin este archivo,
+# el servicio ia NO publica puerto al host; solo red interna erp-net).
+services:
+  ia:
+    ports:
+      - "8000:8000"

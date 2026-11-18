@@ -27,7 +27,10 @@ automáticos) borrara los datos.
 ## Backup manual
 
 ```bash
-DATABASE_URL="postgresql://..." ./scripts/backup-db.sh backup.sql.gz
+PGHOST=tu-host PGPORT=5432 PGUSER=usuario PGPASSWORD=*** PGDATABASE=postgres PGSSLMODE=require \
+  GPG_PASSPHRASE='tu-passphrase' ./scripts/backup-db.sh backup.sql.gz
+# Descifrar (prompt interactivo, sin passphrase en el comando):
+gpg --decrypt backup.sql.gz.gpg > backup.sql.gz
 ```
 
 Verificaciones del script: gzip íntegro + al menos una tabla en el dump.

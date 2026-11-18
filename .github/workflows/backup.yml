@@ -28,7 +28,15 @@ jobs:
           PGSSLMODE: require
           GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
         run: ./scripts/backup-db.sh backup.sql.gz
-
+      - name: Verificar cifrado antes de publicar
+        env:
+          GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+        run: |
+          # Nunca publicar un backup plano: el .gpg debe existir y validar.
+          test -f backup.sql.gz.gpg || { echo "ERROR: backup cifrado ausente"; exit 1; }
+          test ! -f backup.sql.gz || { echo "ERROR: backup plano presente, abortando"; exit 1; }
+          printf '%s' "$GPG_PASSPHRASE" | gpg --batch --decrypt --passphrase-fd 0 -o /dev/null backup.sql.gz.gpg \
+            || { echo "ERROR: el backup cifrado no valida con la passphrase"; exit 1; }
       - name: Subir artifact (unicamente el archivo cifrado)
         uses: actions/upload-artifact@v4
         with:

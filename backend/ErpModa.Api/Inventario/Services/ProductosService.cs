@@ -208,7 +208,7 @@ namespace ErpModa.Api.Inventario.Services
                     // completa con el MISMO idEscaneo. Si la primera llegó a commit,
                     // el reintento encuentra el motivo y responde duplicado.
                     _context.ChangeTracker.Clear();
-                    await Task.Delay(TimeSpan.FromMilliseconds(50 * (1 << (intento - 1))));
+                    await Task.Delay(TimeSpan.FromMilliseconds(50d * (1 << (intento - 1))));
                 }
             }
 

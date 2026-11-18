@@ -15,9 +15,11 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -29,7 +31,10 @@ from deteccion import (  # noqa: E402
     ControlEscaneos,
     Escaneo,
     ResultadoRegistro,
+    RUTA_PENDIENTES_PREDETERMINADA,
+    TrabajadorRegistro,
     leer_qrs,
+    main,
     procesar_frames,
     procesar_video,
     registrar_en_backend,
@@ -38,6 +43,7 @@ from generar_video_prueba import generar_video_sintetico  # noqa: E402
 
 A = "CAM-NEG-M"
 B = "CAM-BLA-L"
+C = "CAM-AZUL-S"
 LIBERACION = 15
 
 
@@ -219,17 +225,30 @@ class BackendFalso:
     las primeras peticiones sin procesarlas.
     """
 
-    def __init__(self, stock: dict[str, int], perder_respuestas: int = 0, fallar_con: list[int] | None = None):
+    def __init__(
+        self,
+        stock: dict[str, int],
+        perder_respuestas: int = 0,
+        fallar_con: list[int] | None = None,
+        latencia: float = 0.0,
+        registrar_llegada: list[float] | None = None,
+    ):
         self.stock = dict(stock)
         self.registrados: dict[str, str] = {}
         self.peticiones: list[dict] = []
         self.perder_respuestas = perder_respuestas
         self.fallar_con = list(fallar_con or [])
+        self.latencia = latencia
+        self.registrar_llegada = registrar_llegada
         backend = self
 
         class Manejador(BaseHTTPRequestHandler):
             def do_POST(self):
                 cuerpo = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if backend.registrar_llegada is not None:
+                    backend.registrar_llegada.append(time.monotonic())
+                if backend.latencia:
+                    time.sleep(backend.latencia)
                 backend.peticiones.append(cuerpo)
                 if backend.fallar_con:
                     self._responder(backend.fallar_con.pop(0), {"error": "fallo"})
@@ -431,6 +450,7 @@ class ColaRegistroTests(unittest.TestCase):
             cola.agregar(escaneo(id_escaneo="id-persistido"))
             cola.procesar()
             self.assertTrue(ruta.exists())
+            cola.cerrar()  # simula el reinicio del proceso
 
             enviados = []
 
@@ -526,6 +546,145 @@ class IdsDeEscaneoTests(unittest.TestCase):
         frames = frames_secuencia(((A, A), 5))
         escaneos = procesar_frames(frames, cola=None)
         self.assertEqual(len({e.id_escaneo for e in escaneos}), 2)
+
+
+class DesacoplamientoHttpTests(unittest.TestCase):
+    """La captura no debe esperar a las peticiones HTTP del trabajador."""
+
+    def _capturar_con_latencia(self, latencia: float, espera_final: float, skus: tuple[str, ...]):
+        tiempos: list[float] = []
+
+        def generador():
+            for sku in skus:
+                for _ in range(5):
+                    tiempos.append(time.monotonic())
+                    yield frame_con(sku)
+
+        with BackendFalso({sku: 0 for sku in skus}, latencia=latencia) as backend:
+            cola = ColaRegistro(
+                lambda e: registrar_en_backend(e.sku, e.id_escaneo, backend.url, timeout=10)
+            )
+            escaneos = procesar_frames(generador(), cola, espera_final=espera_final)
+            peticiones = len(backend.peticiones)
+            stock = dict(backend.stock)
+        return tiempos, escaneos, peticiones, stock
+
+    def test_backend_con_latencia_de_3_segundos_no_bloquea_la_captura(self):
+        tiempos, escaneos, peticiones, stock = self._capturar_con_latencia(3.0, 6.0, (A,))
+        duracion_captura = tiempos[-1] - tiempos[0]
+        self.assertEqual(len(tiempos), 5)
+        self.assertLess(duracion_captura, 2.0, "la captura esperó al backend")
+        self.assertEqual(len(escaneos), 1)
+        self.assertEqual(peticiones, 1)
+        self.assertEqual(stock[A], 1)
+
+    def test_backend_con_latencia_de_5_segundos_no_bloquea_la_captura(self):
+        tiempos, escaneos, peticiones, stock = self._capturar_con_latencia(5.0, 8.0, (A,))
+        duracion_captura = tiempos[-1] - tiempos[0]
+        self.assertLess(duracion_captura, 2.0, "la captura esperó al backend")
+        self.assertEqual(len(escaneos), 1)
+        self.assertEqual(stock[A], 1)
+
+    def test_varios_qr_detectados_mientras_hay_peticion_pendiente(self):
+        tiempos, escaneos, peticiones, stock = self._capturar_con_latencia(1.5, 9.0, (A, B, C))
+        self.assertLess(tiempos[-1] - tiempos[0], 2.0)
+        self.assertEqual(sorted(e.sku for e in escaneos), sorted([A, B, C]))
+        self.assertEqual(len({e.id_escaneo for e in escaneos}), 3)
+        self.assertEqual(peticiones, 3)
+        self.assertEqual(stock, {A: 1, B: 1, C: 1})
+
+    def test_http_500_y_respuesta_perdida_con_un_solo_id(self):
+        with BackendFalso({A: 0}, fallar_con=[500], perder_respuestas=1) as backend:
+            cola = ColaRegistro(
+                lambda e: registrar_en_backend(e.sku, e.id_escaneo, backend.url, timeout=2)
+            )
+            procesar_frames(frames_secuencia(((A,), 3)), cola, espera_final=6)
+
+        self.assertEqual(backend.stock[A], 1)
+        self.assertEqual(len(backend.peticiones), 3)
+        self.assertEqual({p["idEscaneo"] for p in backend.peticiones}.__len__(), 1)
+
+    def test_un_solo_trabajador_por_cola(self):
+        cola = ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"))
+        primero = TrabajadorRegistro(cola)
+        segundo = TrabajadorRegistro(cola)
+        primero.iniciar()
+        segundo.iniciar()
+        self.assertIsNotNone(primero._hilo)
+        self.assertIs(segundo._hilo, None)
+        primero.cerrar(0)
+        cola.cerrar()
+
+
+class PersistenciaPorDefectoTests(unittest.TestCase):
+    def test_cierre_con_pendientes_y_recuperacion_tras_reinicio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            caido = puerto_cerrado()
+            cola = ColaRegistro(
+                lambda e: registrar_en_backend(e.sku, e.id_escaneo, caido, timeout=1),
+                ruta_pendientes=ruta,
+            )
+            escaneos = procesar_frames(frames_secuencia(((A,), 3)), cola, espera_final=0.2)
+            id_original = escaneos[0].id_escaneo
+
+            guardado = json.loads(ruta.read_text(encoding="utf-8"))
+            self.assertEqual(guardado[0]["id_escaneo"], id_original)
+            self.assertNotIn("password", json.dumps(guardado).lower())
+
+            with BackendFalso({A: 0}) as backend:
+                reloj = RelojFalso()
+                recuperada = ColaRegistro(
+                    lambda e: registrar_en_backend(e.sku, e.id_escaneo, backend.url, timeout=2),
+                    reloj=reloj,
+                    ruta_pendientes=ruta,
+                )
+                self.assertEqual([e.id_escaneo for e in recuperada.pendientes], [id_original])
+                terminados = recuperada.vaciar(espera_max=5, dormir=reloj.dormir)
+                self.assertEqual([e.estado for e in terminados], ["registrado"])
+                self.assertEqual(backend.stock[A], 1)
+                self.assertFalse(ruta.exists())
+                recuperada.cerrar()
+
+    def test_ruta_persistente_por_defecto_sobrevive_a_reinicio_del_proceso(self):
+        self.assertEqual(RUTA_PENDIENTES_PREDETERMINADA.name, "qr_pendientes.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            with patch("deteccion.RUTA_PENDIENTES_PREDETERMINADA", ruta):
+                with tempfile.TemporaryDirectory() as tmp_video:
+                    video = generar_video_sintetico(
+                        Path(tmp_video) / "con_qr.avi", [A], frames_qr=5, frames_vacio=1
+                    )
+                    self.assertEqual(
+                        main(["--fuente", str(video), "--backend", puerto_cerrado(), "--espera-final", "0.2"]),
+                        0,
+                    )
+                guardado = json.loads(ruta.read_text(encoding="utf-8"))
+                id_original = guardado[0]["id_escaneo"]
+
+                with BackendFalso({A: 0}) as backend:
+                    with tempfile.TemporaryDirectory() as tmp_video:
+                        vacio = generar_video_sintetico(
+                            Path(tmp_video) / "vacio.avi", [], frames_vacio=3
+                        )
+                        self.assertEqual(
+                            main(["--fuente", str(vacio), "--backend", backend.url, "--espera-final", "3"]),
+                            0,
+                        )
+                    self.assertEqual(backend.stock[A], 1)  # una sola unidad
+                    self.assertEqual(len(backend.peticiones), 1)
+                    self.assertEqual(backend.peticiones[0]["idEscaneo"], id_original)
+                    self.assertFalse(ruta.exists())
+
+    def test_dos_instancias_no_usan_el_mismo_archivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "pendientes.json"
+            primera = ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"), ruta_pendientes=ruta)
+            with self.assertRaises(RuntimeError):
+                ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"), ruta_pendientes=ruta)
+            primera.cerrar()
+            segunda = ColaRegistro(lambda e: ResultadoRegistro(True, 200, "ok"), ruta_pendientes=ruta)
+            segunda.cerrar()
 
 
 if __name__ == "__main__":

@@ -19,6 +19,9 @@ import argparse
 import http.client
 import json
 import os
+import sys
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -44,6 +47,10 @@ ESPERA_INICIAL_SEGUNDOS = 1.0
 ESPERA_MAXIMA_SEGUNDOS = 30.0
 # Al terminar el video, cuanto se espera como maximo a que se registren los pendientes.
 ESPERA_FINAL_SEGUNDOS = 10.0
+# Persistencia por defecto: no depende del directorio de trabajo ni de --pendientes.
+RUTA_PENDIENTES_PREDETERMINADA = Path.home() / ".erp_moda" / "qr_pendientes.json"
+# El trabajador HTTP se despierta con esta frecuencia; nunca bloquea la captura.
+INTERVALO_TRABAJADOR_SEGUNDOS = 0.05
 
 
 # --------------------------------------------------------------------------- lectura
@@ -204,6 +211,60 @@ class Escaneo:
 Enviar = Callable[[Escaneo], ResultadoRegistro]
 
 
+class _BloqueoAlmacenamiento:
+    """Bloqueo por archivo para que dos lectores no procesen el mismo JSON."""
+
+    def __init__(self, ruta: Path) -> None:
+        self.ruta = ruta.with_name(ruta.name + ".lock")
+        self._fd: int | None = None
+
+    def adquirir(self) -> None:
+        self.ruta.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                self._fd = os.open(self.ruta, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(self._fd, str(os.getpid()).encode("ascii"))
+                return
+            except FileExistsError:
+                if self._proceso_activo():
+                    raise RuntimeError(
+                        f"Otro lector está usando el almacenamiento de pendientes ({self.ruta}). "
+                        "Cierra esa instancia antes de iniciar otra."
+                    )
+                # Lock huérfano de un proceso que terminó: se retira y se reintenta.
+                try:
+                    self.ruta.unlink()
+                except FileNotFoundError:
+                    pass
+        raise RuntimeError(f"No se pudo adquirir el bloqueo de {self.ruta}")
+
+    def _proceso_activo(self) -> bool:
+        try:
+            pid = int((self.ruta.read_text() or "0").strip())
+        except (OSError, ValueError):
+            return True
+        if pid <= 0:
+            return True
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # existe, pero no tenemos permiso para señalarlo
+
+    def liberar(self) -> None:
+        if self._fd is None:
+            return
+        os.close(self._fd)
+        self._fd = None
+        try:
+            if int((self.ruta.read_text() or "0").strip()) == os.getpid():
+                self.ruta.unlink()
+        except (OSError, ValueError):
+            pass
+
+
 class ColaRegistro:
     """Envia los escaneos al backend y reintenta los fallos temporales.
 
@@ -213,7 +274,10 @@ class ColaRegistro:
     intentar ese escaneo, y en esa pasada no se intentan los demas.
 
     Con `ruta_pendientes` los escaneos sin confirmar se guardan en un JSON y se
-    recuperan al arrancar de nuevo el lector.
+    recuperan al arrancar de nuevo el lector. Las escrituras son atomicas y un
+    bloqueo por archivo impide dos instancias sobre el mismo archivo.
+    La lista se protege con un RLock: la peticion HTTP se hace FUERA del lock
+    para que agregar escaneos nunca espere al backend.
     """
 
     def __init__(
@@ -228,61 +292,101 @@ class ColaRegistro:
         self._reloj = reloj
         self._espera_inicial = espera_inicial
         self._espera_maxima = espera_maxima
-        self._ruta = ruta_pendientes
+        self._ruta = Path(ruta_pendientes) if ruta_pendientes is not None else None
+        self._bloqueo = threading.RLock()
+        self._archivo_bloqueo: _BloqueoAlmacenamiento | None = None
+        if self._ruta is not None:
+            self._archivo_bloqueo = _BloqueoAlmacenamiento(self._ruta)
+            try:
+                self._archivo_bloqueo.adquirir()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"No se puede acceder al almacenamiento persistente de pendientes "
+                    f"({self._ruta}): {exc}. Revisa permisos o configura --pendientes."
+                ) from exc
         self._pendientes: list[Escaneo] = self._cargar()
 
     @property
     def pendientes(self) -> list[Escaneo]:
-        return list(self._pendientes)
+        with self._bloqueo:
+            return list(self._pendientes)
 
     def agregar(self, escaneo: Escaneo) -> None:
-        self._pendientes.append(escaneo)
-        self._guardar()
+        with self._bloqueo:
+            self._pendientes.append(escaneo)
+            # Se persiste ANTES de intentar enviar: si el proceso muere, el id
+            # original sigue disponible para el reinicio.
+            self._guardar()
 
     def procesar(self) -> list[Escaneo]:
         """Intenta los escaneos pendientes cuyo turno llego. Devuelve los que terminaron."""
         terminados: list[Escaneo] = []
-        for escaneo in list(self._pendientes):
-            ahora = self._reloj()
-            if escaneo.proximo_intento > ahora:
-                continue
+        while True:
+            with self._bloqueo:
+                ahora = self._reloj()
+                escaneo = next((e for e in self._pendientes if e.proximo_intento <= ahora), None)
+            if escaneo is None:
+                break
 
-            resultado = self._enviar(escaneo)
-            escaneo.intentos += 1
-            escaneo.estado_http = resultado.estado_http
-            escaneo.detalle = resultado.detalle
-            escaneo.stock = resultado.stock
+            resultado = self._enviar(escaneo)  # fuera del lock: la captura no espera
+            with self._bloqueo:
+                escaneo.intentos += 1
+                escaneo.estado_http = resultado.estado_http
+                escaneo.detalle = resultado.detalle
+                escaneo.stock = resultado.stock
 
-            if resultado.ok:
-                escaneo.estado = "duplicado" if resultado.duplicado else "registrado"
-            elif resultado.reintentable:
-                espera = min(self._espera_maxima, self._espera_inicial * 2 ** (escaneo.intentos - 1))
-                escaneo.proximo_intento = ahora + espera
-                break  # el backend no responde: no insistir con el resto en esta pasada
-            else:
-                escaneo.estado = "rechazado"
+                if resultado.ok:
+                    escaneo.estado = "duplicado" if resultado.duplicado else "registrado"
+                elif resultado.reintentable:
+                    espera = min(self._espera_maxima, self._espera_inicial * 2 ** (escaneo.intentos - 1))
+                    escaneo.proximo_intento = ahora + espera
+                    self._guardar()
+                    break  # backend lento: no insistir con el resto en esta pasada
+                else:
+                    escaneo.estado = "rechazado"
 
-            self._pendientes.remove(escaneo)
-            terminados.append(escaneo)
-
-        self._guardar()
+                self._pendientes.remove(escaneo)
+                terminados.append(escaneo)
+                self._guardar()
         return terminados
 
     def vaciar(self, espera_max: float, dormir: Callable[[float], None] = time.sleep) -> list[Escaneo]:
         """Reintenta los pendientes hasta que no quede ninguno o pasen `espera_max` segundos."""
         limite = self._reloj() + espera_max
         terminados = self.procesar()
-        while self._pendientes and self._reloj() < limite:
-            siguiente = min(e.proximo_intento for e in self._pendientes)
+        with self._bloqueo:
+            pendientes = list(self._pendientes)
+        while pendientes and self._reloj() < limite:
+            siguiente = min(e.proximo_intento for e in pendientes)
             dormir(max(0.0, min(siguiente, limite) - self._reloj()))
             terminados.extend(self.procesar())
+            with self._bloqueo:
+                pendientes = list(self._pendientes)
         return terminados
+
+    def cerrar(self) -> None:
+        """Libera el bloqueo del archivo. Los pendientes quedan en disco con su id."""
+        if self._archivo_bloqueo is not None:
+            self._archivo_bloqueo.liberar()
+            self._archivo_bloqueo = None
+
+    def __del__(self) -> None:
+        try:
+            self.cerrar()
+        except Exception:
+            pass
 
     def _cargar(self) -> list[Escaneo]:
         if self._ruta is None or not self._ruta.exists():
             return []
-        datos = json.loads(self._ruta.read_text(encoding="utf-8"))
-        return [Escaneo(**d) for d in datos]
+        try:
+            datos = json.loads(self._ruta.read_text(encoding="utf-8"))
+            return [Escaneo(**dato) for dato in datos]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise RuntimeError(
+                f"No se pudo leer el almacenamiento de pendientes ({self._ruta}): {exc}. "
+                "No se descartan movimientos: revisa el archivo antes de continuar."
+            ) from exc
 
     def _guardar(self) -> None:
         if self._ruta is None:
@@ -291,11 +395,22 @@ class ColaRegistro:
             self._ruta.unlink(missing_ok=True)
             return
         self._ruta.parent.mkdir(parents=True, exist_ok=True)
-        temporal = self._ruta.with_suffix(self._ruta.suffix + ".tmp")
         # proximo_intento es del reloj monotono de este proceso: no se guarda.
         datos = [{k: v for k, v in asdict(e).items() if k != "proximo_intento"} for e in self._pendientes]
-        temporal.write_text(json.dumps(datos, indent=2, ensure_ascii=False), encoding="utf-8")
-        temporal.replace(self._ruta)
+        temporal = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._ruta.parent,
+                prefix=self._ruta.name + ".", suffix=".tmp", delete=False
+            ) as archivo:
+                temporal = Path(archivo.name)
+                json.dump(datos, archivo, indent=2, ensure_ascii=False)
+                archivo.flush()
+                os.fsync(archivo.fileno())
+            os.replace(temporal, self._ruta)
+        finally:
+            if temporal is not None and temporal.exists():
+                temporal.unlink()
 
 
 # --------------------------------------------------------------------------- video
@@ -325,6 +440,71 @@ def _imprimir(escaneo: Escaneo) -> None:
     )
 
 
+class TrabajadorRegistro:
+    """Un único hilo que hace las peticiones HTTP fuera del bucle de captura.
+
+    El lector solo encola escaneos; el trabajador los envía con los reintentos
+    exponenciales de ColaRegistro. No se crea más de un trabajador por cola.
+    """
+
+    def __init__(
+        self,
+        cola: ColaRegistro,
+        notificar: Callable[[Escaneo], None] = _imprimir,
+        intervalo: float = INTERVALO_TRABAJADOR_SEGUNDOS,
+    ) -> None:
+        self.cola = cola
+        self.notificar = notificar
+        self.intervalo = intervalo
+        self._alistado = threading.Event()
+        self._hilo: threading.Thread | None = None
+        self._bloqueo = threading.Lock()
+        self._limite_cierre: float | None = None
+
+    def iniciar(self) -> None:
+        with self._bloqueo:
+            existente = getattr(self.cola, "_trabajador", None)
+            if existente is not None and existente is not self:
+                return  # nunca dos trabajadores para la misma cola
+            if self._hilo is not None:
+                return
+            self._alistado.clear()
+            self.cola._trabajador = self
+            self._hilo = threading.Thread(target=self._bucle, name="registro-qr", daemon=True)
+            self._hilo.start()
+
+    def _bucle(self) -> None:
+        while not self._alistado.is_set():
+            for terminado in self.cola.procesar():
+                self.notificar(terminado)
+            self._alistado.wait(self.intervalo)
+
+        # Cierre ordenado: se agota el tiempo restante intentando los pendientes.
+        # Los que no se confirmen quedan en disco con su id original.
+        limite = self._limite_cierre
+        if limite is not None:
+            restante = max(0.0, limite - time.monotonic())
+            if restante > 0:
+                for terminado in self.cola.vaciar(restante):
+                    self.notificar(terminado)
+
+    def cerrar(self, espera_max: float = ESPERA_FINAL_SEGUNDOS) -> None:
+        """Pide cortar, espera a lo sumo `espera_max` y deja los pendientes en disco."""
+        with self._bloqueo:
+            hilo = self._hilo
+            self._limite_cierre = time.monotonic() + max(0.0, espera_max)
+            self._alistado.set()
+        if hilo is None:
+            return
+        hilo.join(timeout=max(0.0, espera_max))
+        if hilo.is_alive():
+            print(
+                "  aviso: el trabajador HTTP sigue ocupado tras el cierre; "
+                "los escaneos sin confirmar permanecen guardados con su id original.",
+                file=sys.stderr,
+            )
+
+
 def procesar_frames(
     frames: Iterable[np.ndarray],
     cola: ColaRegistro | None,
@@ -332,9 +512,10 @@ def procesar_frames(
     directorio_salida: Path | None = None,
     espera_final: float = ESPERA_FINAL_SEGUNDOS,
 ) -> list[Escaneo]:
-    """Lee los QR de los frames y registra cada escaneo nuevo. Devuelve todos los escaneos.
+    """Captura y detecta QR; el HTTP lo hace un trabajador aparte.
 
-    Con `cola=None` no se llama al backend (modo simulado).
+    El bucle principal solo decodifica y encola. Con `cola=None` no se llama al
+    backend (modo simulado).
     """
     if directorio_salida is not None:
         directorio_salida.mkdir(parents=True, exist_ok=True)
@@ -343,6 +524,9 @@ def procesar_frames(
     control = ControlEscaneos(frames_liberacion)
     escaneos: list[Escaneo] = []
     numero_frame = 0
+    trabajador = TrabajadorRegistro(cola) if cola is not None else None
+    if trabajador is not None:
+        trabajador.iniciar()
 
     try:
         for frame in frames:
@@ -359,25 +543,25 @@ def procesar_frames(
                     escaneo.estado, escaneo.detalle = "simulado", "sin backend"
                     _imprimir(escaneo)
                 else:
+                    # Solo se encola (y se persiste): nunca se espera al backend.
                     cola.agregar(escaneo)
                 if directorio_salida is not None:
                     ruta = directorio_salida / f"qr_{numero_frame:05d}_{escaneo.id_escaneo[:8]}.jpg"
                     if not cv2.imwrite(str(ruta), anotar_frame(frame, lecturas, f"{sku} {escaneo.id_escaneo[:8]}")):
                         print(f"  aviso: no se pudo escribir la evidencia {ruta}")
-            if cola is not None:
-                for terminado in cola.procesar():
-                    _imprimir(terminado)
     except KeyboardInterrupt:
         print("\nInterrumpido por el usuario.")
-
-    if cola is not None:
-        for terminado in cola.vaciar(espera_final):
-            _imprimir(terminado)
-        for pendiente in cola.pendientes:
-            print(
-                f"  PENDIENTE: QR {pendiente.sku!r} (id {pendiente.id_escaneo}) sin confirmar "
-                f"tras {pendiente.intentos} intentos: {pendiente.detalle}"
-            )
+    finally:
+        if trabajador is not None and cola is not None:
+            # Cierre ordenado: termina la petición en curso dentro del límite y
+            # deja en disco los pendientes (con su UUID original).
+            trabajador.cerrar(espera_final)
+            for pendiente in cola.pendientes:
+                print(
+                    f"  PENDIENTE: QR {pendiente.sku!r} (id {pendiente.id_escaneo}) sin confirmar "
+                    f"tras {pendiente.intentos} intentos: {pendiente.detalle}"
+                )
+            cola.cerrar()
 
     print(f"Frames procesados: {numero_frame}")
     return escaneos
@@ -410,12 +594,14 @@ def procesar_video(
 
     cola = None
     if not simular:
+        # Persistencia real por defecto: sin --pendientes no se puede perder stock.
+        ruta = ruta_pendientes if ruta_pendientes is not None else RUTA_PENDIENTES_PREDETERMINADA
         cola = ColaRegistro(
             enviar=lambda e: registrar_en_backend(e.sku, e.id_escaneo, backend_url),
-            ruta_pendientes=ruta_pendientes,
+            ruta_pendientes=ruta,
         )
         if cola.pendientes:
-            print(f"Recuperados {len(cola.pendientes)} escaneos pendientes de {ruta_pendientes}")
+            print(f"Recuperados {len(cola.pendientes)} escaneos pendientes de {ruta}")
 
     try:
         return procesar_frames(
@@ -427,6 +613,8 @@ def procesar_video(
         )
     finally:
         captura.release()
+        if cola is not None:
+            cola.cerrar()
 
 
 def _parsear_fuente(valor: str) -> int | str:
@@ -465,8 +653,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pendientes",
         type=Path,
-        default=None,
-        help="JSON donde guardar los escaneos sin confirmar para reintentarlos al volver a arrancar",
+        default=RUTA_PENDIENTES_PREDETERMINADA,
+        help=(
+            "JSON donde guardar los escaneos sin confirmar para reintentarlos al volver a arrancar "
+            f"(por defecto {RUTA_PENDIENTES_PREDETERMINADA})"
+        ),
     )
     parser.add_argument(
         "--espera-final",
@@ -477,16 +668,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-frames", type=int, default=None)
     args = parser.parse_args(argv)
 
-    escaneos = procesar_video(
-        fuente=_parsear_fuente(args.fuente),
-        backend_url=args.backend,
-        simular=args.simular,
-        frames_liberacion=args.frames_liberacion,
-        directorio_salida=args.salida,
-        max_frames=args.max_frames,
-        ruta_pendientes=args.pendientes,
-        espera_final=args.espera_final,
-    )
+    try:
+        escaneos = procesar_video(
+            fuente=_parsear_fuente(args.fuente),
+            backend_url=args.backend,
+            simular=args.simular,
+            frames_liberacion=args.frames_liberacion,
+            directorio_salida=args.salida,
+            max_frames=args.max_frames,
+            ruta_pendientes=args.pendientes,
+            espera_final=args.espera_final,
+        )
+    except RuntimeError as exc:
+        # Incluye almacenamiento persistente inaccesible o corrupto: nunca se
+        # continúa en un modo que pueda perder movimientos de inventario.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     conteo = Counter(e.estado for e in escaneos)
     resumen = ", ".join(f"{estado}: {n}" for estado, n in sorted(conteo.items()))
     print(f"Escaneos: {len(escaneos)} ({resumen or 'ninguno'})")

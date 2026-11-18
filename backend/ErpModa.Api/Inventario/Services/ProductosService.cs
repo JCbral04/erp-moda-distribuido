@@ -4,6 +4,7 @@ using ErpModa.Api.Inventario.DTOs;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Models;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace ErpModa.Api.Inventario.Services
 {
@@ -122,6 +123,18 @@ namespace ErpModa.Api.Inventario.Services
         // registró (p. ej. se perdió la respuesta), devuelve el registro con
         // Duplicado = true y no suma otra unidad.
         // Devuelve null si no existe una variante con ese SKU.
+        // PostgreSQL aborta una transacción Serializable cuando dos de ellas se
+        // solapan (40001) o se bloquean entre sí (40P01). Se reintenta SOLO esa
+        // transacción, con pocos intentos y espera corta; cualquier otro error
+        // (SKU inexistente, id duplicado con otro SKU, fallo de BD) se propaga.
+        private const int MaxIntentosEscaneoQr = 3;
+
+        public static bool EsConflictoSerializacion(PostgresException ex) =>
+            EsConflictoSerializacion(ex.SqlState);
+
+        public static bool EsConflictoSerializacion(string sqlState) =>
+            sqlState == "40001" || sqlState == "40P01";
+
         public async Task<EscaneoQrResponseDto?> RegistrarEscaneoQrAsync(string sku, Guid idEscaneo)
         {
             if (string.IsNullOrWhiteSpace(sku))
@@ -133,57 +146,73 @@ namespace ErpModa.Api.Inventario.Services
             var skuNormalizado = sku.Trim();
             var motivo = MotivoEscaneoQr(idEscaneo);
 
-            EscaneoQrResponseDto? resultado = null;
-            await EjecutarAtomicoAsync(async () =>
+            for (var intento = 1; intento <= MaxIntentosEscaneoQr; intento++)
             {
-                // Se busca dentro de la misma transacción Serializable que el incremento:
-                // dos peticiones simultáneas con el mismo id no pueden registrar ambas.
-                var previo = await _context.MovimientosStock
-                    .Include(m => m.Variante!)
-                    .ThenInclude(v => v.Producto)
-                    .FirstOrDefaultAsync(m => m.Tipo == "deteccion_ia" && m.Motivo == motivo);
-
-                if (previo?.Variante != null)
+                EscaneoQrResponseDto? resultado = null;
+                try
                 {
-                    if (previo.Variante.Sku != skuNormalizado)
-                        throw new EscaneoQrConflictoException(
-                            $"El escaneo {idEscaneo} ya se registró para el SKU '{previo.Variante.Sku}'.");
+                    await EjecutarAtomicoAsync(async () =>
+                    {
+                        // Se busca dentro de la misma transacción Serializable que el incremento:
+                        // dos peticiones simultáneas con el mismo id no pueden registrar ambas.
+                        var previo = await _context.MovimientosStock
+                            .Include(m => m.Variante!)
+                            .ThenInclude(v => v.Producto)
+                            .FirstOrDefaultAsync(m => m.Tipo == "deteccion_ia" && m.Motivo == motivo);
 
-                    resultado = CrearRespuestaEscaneo(previo.Variante, idEscaneo, duplicado: true);
-                    return;
+                        if (previo?.Variante != null)
+                        {
+                            if (previo.Variante.Sku != skuNormalizado)
+                                throw new EscaneoQrConflictoException(
+                                    $"El escaneo {idEscaneo} ya se registró para el SKU '{previo.Variante.Sku}'.");
+
+                            resultado = CrearRespuestaEscaneo(previo.Variante, idEscaneo, duplicado: true);
+                            return;
+                        }
+
+                        var variante = await _context.Variantes
+                            .Include(v => v.Producto)
+                            .FirstOrDefaultAsync(v => v.Sku == skuNormalizado);
+
+                        if (variante == null)
+                            return;
+
+                        variante.Stock += 1;
+                        variante.ActualizadoEn = DateTime.UtcNow;
+
+                        // El QR se decodifica de forma exacta: no hay incertidumbre que
+                        // revisar manualmente (RN-003 ia.md), por eso confianza = 1.
+                        _context.MovimientosStock.Add(new MovimientoStock
+                        {
+                            VarianteId = variante.Id,
+                            Tipo = "deteccion_ia",
+                            Cantidad = 1,
+                            ReferenciaTipo = null,
+                            ReferenciaId = null,
+                            Motivo = motivo,
+                            Usuario = "ia-qr",
+                            Confianza = 1m,
+                            CreadoEn = DateTime.UtcNow
+                        });
+
+                        await _context.SaveChangesAsync();
+
+                        resultado = CrearRespuestaEscaneo(variante, idEscaneo, duplicado: false);
+                    });
+
+                    return resultado;
                 }
-
-                var variante = await _context.Variantes
-                    .Include(v => v.Producto)
-                    .FirstOrDefaultAsync(v => v.Sku == skuNormalizado);
-
-                if (variante == null)
-                    return;
-
-                variante.Stock += 1;
-                variante.ActualizadoEn = DateTime.UtcNow;
-
-                // El QR se decodifica de forma exacta: no hay incertidumbre que
-                // revisar manualmente (RN-003 ia.md), por eso confianza = 1.
-                _context.MovimientosStock.Add(new MovimientoStock
+                catch (PostgresException ex) when (intento < MaxIntentosEscaneoQr && EsConflictoSerializacion(ex))
                 {
-                    VarianteId = variante.Id,
-                    Tipo = "deteccion_ia",
-                    Cantidad = 1,
-                    ReferenciaTipo = null,
-                    ReferenciaId = null,
-                    Motivo = motivo,
-                    Usuario = "ia-qr",
-                    Confianza = 1m,
-                    CreadoEn = DateTime.UtcNow
-                });
+                    // La transacción se abortó: se descartan sus cambios y se repite
+                    // completa con el MISMO idEscaneo. Si la primera llegó a commit,
+                    // el reintento encuentra el motivo y responde duplicado.
+                    _context.ChangeTracker.Clear();
+                    await Task.Delay(TimeSpan.FromMilliseconds(50 * (1 << (intento - 1))));
+                }
+            }
 
-                await _context.SaveChangesAsync();
-
-                resultado = CrearRespuestaEscaneo(variante, idEscaneo, duplicado: false);
-            });
-
-            return resultado;
+            return null; // inalcanzable: el último intento propaga su excepción
         }
 
         private static EscaneoQrResponseDto CrearRespuestaEscaneo(Variante variante, Guid idEscaneo, bool duplicado)

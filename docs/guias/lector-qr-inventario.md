@@ -51,7 +51,7 @@ El endpoint modifica el stock. La autenticación del proyecto está planeada en 
 - **IP de origen:** se usa la que deja `UseForwardedHeaders` (#93). Detrás del proxy de confianza (`ProxyTrustedIP`) es la del cliente real.
 - **Dónde corre el lector:** si corre dentro de la red `erp-net`, se configura la subred de esa red (`docker network inspect erp-net`). Si corre en un PC de la tienda, se configura la IP de ese PC.
 - **Logs:** el rechazo se registra como advertencia, sin la IP del cliente (#88).
-- **Habilitar en producción:** el `docker-compose.yml` de producción no pasa todavía esta variable al backend, y ese archivo es de CODEOWNERS (JCbral04). En el PR se propone añadir `EscaneoQr__RedesPermitidas: ${ESCANEO_QR_REDES_PERMITIDAS:-}` al servicio `backend` y la variable a `.env.example`.
+- **Habilitar en producción:** `docker-compose.yml` pasa la variable al backend como `EscaneoQr__RedesPermitidas: ${ESCANEO_QR_REDES_PERMITIDAS:-}` y `.env.example` documenta `ESCANEO_QR_REDES_PERMITIDAS`. Si la variable está vacía, **se sigue denegando todo**; no hay excepciones implícitas para `127.0.0.1`. Estos dos archivos son de CODEOWNERS (@JCbral04), por lo que su aprobación sigue siendo necesaria.
 - **Cuando llegue #84:** este atributo se reemplaza por `[Authorize]` con la política que se defina para el lector, y el movimiento guardará el usuario real en lugar de `ia-qr`.
 
 ### 4. Idempotencia: cada escaneo tiene un id y reintentar no duplica
@@ -79,21 +79,24 @@ CREATE UNIQUE INDEX uq_mov_escaneo_qr ON movimientos_stock (motivo)
 
 Sin el índice la transacción `Serializable` sigue evitando el duplicado; el índice es una segunda barrera.
 
-### 5. Recuperación ante fallos del backend en el lector
+### 5. Arquitectura desacoplada: captura y trabajador HTTP
 
-`ColaRegistro` (en `ai/deteccion.py`) envía los escaneos y decide qué hacer con cada respuesta:
+El bucle principal **solo captura frames y detecta QR**. Cada etiqueta nueva recibe su UUID y se encola; un **único trabajador** (`TrabajadorRegistro`, un hilo) hace las peticiones HTTP fuera del bucle de captura. Por eso una respuesta lenta del backend (3 s, 5 s o más) no detiene la cámara ni la decodificación. Solo existe un trabajador por cola: dos instancias nunca envían simultáneamente el mismo escaneo.
 
-| Respuesta | Qué hace el lector |
+Para el envío, `ColaRegistro` decide qué hacer con cada respuesta:
+
+| Respuesta | Qué hace el trabajador |
 |---|---|
 | 200 | Registrado. Si `duplicado: true`, ya estaba registrado. |
 | Sin conexión, timeout, conexión cerrada sin respuesta, respuesta ilegible, 5xx, 408, 429 | **Reintenta con el mismo `idEscaneo`.** Espera 1 s, 2 s, 4 s… hasta 30 s entre intentos. |
 | 400, 403, 404, 409 | No reintenta: el problema no se arregla repitiendo. Lo muestra como `NO REGISTRADO`. |
 
-- **Mientras el backend no responde:** no se insiste con los demás pendientes en la misma pasada, para no bloquear la lectura de la cámara con un timeout por cada escaneo.
-- **Al terminar el video:** el lector espera hasta `--espera-final` segundos (10 por defecto) a que se registren los pendientes.
-- **Si el lector se cierra:** con `--pendientes RUTA.json` los escaneos sin confirmar se guardan en disco y se reintentan con su mismo id al volver a arrancar. Sin esa opción, los pendientes se muestran al salir y se pierden.
+- **Mientras el backend no responde:** no se insiste con los demás pendientes en la misma pasada, para no saturar al backend. La captura sigue a la velocidad de la cámara.
+- **Persistencia por defecto:** el archivo es `~/.erp_moda/qr_pendientes.json` (se crean los directorios). Se puede cambiar con `--pendientes OTRA_RUTA.json`. Cada escaneo se escribe **antes** de intentar enviarlo, con escritura atómica y un bloqueo por archivo que impide dos lectores sobre el mismo JSON. Solo se elimina del archivo cuando el backend confirma (200). Si el archivo no se puede abrir o está corrupto, el lector **termina con error** en lugar de continuar en un modo que pueda perder movimientos.
+- **Recuperación al iniciar:** los pendientes se cargan automáticamente con su UUID original y se reintentan con el mismo trabajador. El JSON no contiene credenciales.
+- **Cierre seguro (`--espera-final`, 10 s por defecto):** se detiene la admisión de nuevos envíos, se permite terminar la petición en curso y se agotan los reintentos dentro de ese límite. Si queda algo sin confirmar, se muestra como `PENDIENTE` y permanece en disco con su id; se reanudará en el próximo arranque. En modo `--simular` no se persiste nada porque no se modifica el inventario.
 
-Esto también cubre la limitación conocida del backend: sin reintentos internos, un conflicto de la transacción `Serializable` devuelve 500. En la prueba contra PostgreSQL con 20 prendas distintas escaneadas a la vez, 18 peticiones fallaron con 500 en la primera ráfaga, y tras los reintentos del lector el stock subió exactamente 20 (ver Verificación).
+El backend también trata los conflictos transitorios de PostgreSQL (`SQLSTATE 40001` y `40P01`) en la transacción del escaneo: reintenta **solo esa transacción**, hasta 3 veces con espera de 50/100 ms, manteniendo el mismo `idEscaneo`. Si el primer intento llegó a confirmar, el reintento obtiene `duplicado: true` y no suma otra unidad. Los errores permanentes no se ocultan.
 
 ### 6. Cuándo una etiqueta cuenta como prenda nueva, y sus limitaciones físicas
 
@@ -112,9 +115,9 @@ Una etiqueta se queda varios frames en el encuadre, así que no cada lectura es 
 
 Operativamente, al pasar varias prendas del mismo SKU hay que **retirar cada una del encuadre al menos medio segundo antes de pasar la siguiente**, o ponerlas juntas a la vez frente a la cámara. Si se necesitara contar unidades idénticas sin esa regla, la solución sería que cada etiqueta lleve un número de serie además del SKU (p. ej. `CAM-NEG-M#0001`). Eso cambia el formato de las etiquetas y queda fuera de este issue.
 
-### 7. Sin dependencias nuevas ni cambios en CI
+### 7. Sin dependencias nuevas; pruebas en CI
 
-`cv2.QRCodeDetector` y `cv2.QRCodeEncoder` vienen en `opencv-python-headless`, que ya estaba en `ai/requirements.txt`. La llamada HTTP usa `urllib` y las pruebas usan `unittest` y `http.server`, todo de la librería estándar. Se conservaron los nombres de archivo (`deteccion.py`, `generar_video_prueba.py`) para que el paso `py_compile` de `ci.yml` siga igual. Las pruebas de Python no corren en CI porque `.github/` es de CODEOWNERS; en el PR se propone el paso.
+`cv2.QRCodeDetector` y `cv2.QRCodeEncoder` vienen en `opencv-python-headless`, que ya estaba en `ai/requirements.txt`. La llamada HTTP usa `urllib` y las pruebas usan `unittest` y `http.server`, todo de la librería estándar; el trabajador usa `threading`. Se conservaron los nombres de archivo para que el paso `py_compile` siga igual. El job `ia` de `ci.yml` ejecuta además `python -m unittest discover -s ai/tests -v` sobre el commit del PR (`.github/` es de CODEOWNERS: @JCbral04).
 
 ### 8. El endpoint vive en `ProductosController`
 
@@ -125,6 +128,10 @@ Así no hace falta registrar un servicio nuevo en `Program.cs`: el método se ag
 Con el backend levantado (por defecto `http://localhost:5000`, que en desarrollo publica `docker-compose.override.yml`, o la variable `BACKEND_URL`; dentro de la red `erp-net` sería `http://backend:8080`):
 
 ```bash
+# Ruta persistente por defecto: ~/.erp_moda/qr_pendientes.json
+python ai/deteccion.py --fuente 0
+
+# Ruta alternativa (por ejemplo, un disco compartido)
 python ai/deteccion.py --fuente 0 --pendientes ai/evidencia/pendientes.json
 ```
 
@@ -143,7 +150,7 @@ Opciones del lector:
 | `--backend` | URL base del backend; por defecto `$BACKEND_URL` o `http://localhost:5000` |
 | `--simular` | Solo lee los QR, sin llamar al backend |
 | `--frames-liberacion` | Frames seguidos sin ver una etiqueta para que una igual vuelva a contar (15) |
-| `--pendientes` | JSON donde se guardan los escaneos sin confirmar para reintentarlos al volver a arrancar |
+| `--pendientes` | JSON de pendientes; por defecto `~/.erp_moda/qr_pendientes.json`. Se recupera automáticamente al arrancar |
 | `--espera-final` | Segundos máximos para reintentar pendientes al terminar el video (10) |
 | `--salida` | Carpeta donde guardar el frame anotado de cada escaneo |
 | `--max-frames` | Límite de frames a procesar |
@@ -159,17 +166,31 @@ Respuestas del endpoint:
 | Cuerpo vacío, SKU vacío o de más de 50 caracteres, sin `idEscaneo`, `idEscaneo` inválido o vacío (`0000…`), campo extra o tipo erróneo | **400** |
 | Fuera de `Development` desde una red no permitida | **403** |
 
+## Procedimiento de cierre seguro
+
+1. Terminar la captura con `Ctrl+C` o dejar que se acabe el video (`--max-frames`). El lector deja de encolar, el trabajador termina la petición en curso y agota los reintentos durante `--espera-final`.
+2. Si aparece `PENDIENTE: ... (id ...)`, el movimiento **no** se perdió: está en el JSON con su UUID. No borres ese archivo.
+3. Al volver a iniciar (con backend o sin él), el lector imprime `Recuperados N escaneos pendientes de ...` y los reenvía con el mismo id. Solo cuando el backend responde 200 se elimina la entrada.
+4. Para migrar a otra máquina, copia el JSON; para cambiar de ruta usa `--pendientes NUEVA_RUTA` y asegúrate de que no haya otro lector usando la anterior.
+5. Si el almacenamiento no se puede crear/escribir, el proceso termina con `ERROR: ...` y código 2. Corrige permisos o indica otra ruta antes de volver a escanear.
+
 ## Verificación
 
 Lo que se ejecutó realmente, el 18/11/2026:
 
 | Prueba | Resultado |
 |---|---|
-| Tests de backend sin HTTP (`dotnet test`, filtro sin `HttpTests` ni `IntegrationTests`): incluye los nuevos de servicio (idempotencia, conflicto 409, id vacío, varias prendas del mismo SKU, escanear y vender, reintento después de vender) y del filtro de red | **99/99** en verde |
-| Tests HTTP con `WebApplicationFactory` (`EscaneoQrHttpTests`, incluido el 403 en Production) | No se pudieron ejecutar en local: en este equipo solo está .NET 10 y todos los tests HTTP, también los de Ventas en `main`, fallan con `PipeWriter.UnflushedBytes` (500). CI usa .NET 8. Los mismos casos se probaron a mano contra la API real (fila siguiente). |
-| API real (Kestrel en `Production`) + PostgreSQL 16 con `docs/inventario/schema.sql` y `docs/ventas/schema.sql` | 403 sin `RedesPermitidas`, sin sumar stock. Los 8 cuerpos inválidos dan 400 sin stack trace. 200 / duplicado / 409 / 404 según la tabla. **20 peticiones simultáneas con el mismo id → +1.** **20 ids distintos a la vez → 18 fallan con 500 en la ráfaga; con los reintentos del lector, +20 exactos**. Venta creada y confirmada descuenta 1; un reintento posterior de un escaneo ya registrado responde duplicado y no cambia el stock. En la base, ningún `motivo` de `deteccion_ia` repetido. |
-| Lector de extremo a extremo contra esa API | Video `CAM-NEG-M, CAM-BLA-L, CAM-NEG-M` → 3 registrados. Con el backend caído, el escaneo queda pendiente en `--pendientes`; al volver a arrancar con el backend arriba se registra con el mismo id y el archivo se borra. |
-| Tests del lector (`python -m unittest discover -s ai/tests -v`) | **44/44** en verde con Python 3.13 y OpenCV 5.0.0 (ver la siguiente tabla) |
+| `dotnet test backend/ErpModa.sln` con SDK/.NET 8 y PostgreSQL 17 local (cadena de conexión sobreescrita por variable de entorno, sin credenciales remotas) | **132/132** en verde: incluye idempotencia, 409, id vacío, varias prendas del mismo SKU, escanear y vender, reintento tras vender, filtro de red y los tests HTTP con `WebApplicationFactory` (403 en Production). |
+| Clasificación de conflictos transitorios (`ProductosService.EsConflictoSerializacion`) | **4/4** casos: 40001 y 40P01 se reintentan; 23505 y 42P01 no se tratan como serialización. |
+| Tests del lector (`python -m unittest discover -s ai/tests -v`) | **52/52** en verde con Python 3.12.3, OpenCV 5.0.0.93 y NumPy 2.5.4 (entorno aislado; ver la siguiente tabla). |
+| `python -m py_compile ai/main.py ai/deteccion.py ai/generar_video_prueba.py` | Correcto. |
+| Backend simulado con latencia de 3 s y de 5 s | La captura de 5 frames terminó en mucho menos de 2 s en ambos casos; el stock subió exactamente 1. |
+| Backend 500 + respuesta perdida con el trabajador | 3 peticiones con el mismo UUID; stock +1 (el reintento final recibió `duplicado: true`). |
+| Varios QR mientras hay petición pendiente | 3 QR en 15 frames, captura < 2 s, 3 peticiones, stock +1 por SKU. |
+| Cierre con pendientes y reinicio | El JSON conservó el UUID original; tras reiniciar con backend disponible se registró una sola unidad y el archivo se eliminó. |
+| Ruta persistente por defecto (`~/.erp_moda/qr_pendientes.json`) | Probada con `main()` y la ruta parcheada a un temporal: supervivió a un reinicio del proceso, +1 exacto. |
+| Dos instancias sobre el mismo JSON | La segunda falla con error explícito; tras cerrar la primera, puede abrirlo. |
+| Cámara física | **No ejecutada**: no hay cámara ni etiquetas impresas en este entorno. |
 
 Qué cubren los tests del lector (`ai/tests/test_deteccion.py`):
 
@@ -181,12 +202,13 @@ Qué cubren los tests del lector (`ai/tests/test_deteccion.py`):
 | `registrar_en_backend` contra un backend simulado idempotente | Envío de SKU e id; duplicado; 400/403/404/409 no reintentables; 500, backend caído y **respuesta perdida** (el backend suma y cierra la conexión) reintentables |
 | `ColaRegistro` | Reintento con el mismo id; espera creciente con máximo; sin reintento en fallos permanentes; no insiste con los demás si el backend no responde; pendientes guardados y recuperados; `vaciar` con y sin éxito dentro del límite |
 | Extremo a extremo con el backend simulado | Respuesta perdida → reintento → `duplicado`, stock +1; 500 y 503 → registrado al tercer intento, stock +1; dos prendas iguales → dos ids, stock +2; backend caído → queda pendiente |
+| `DesacoplamientoHttpTests` | Latencias de 3 s y 5 s sin bloquear la captura; 500 + respuesta perdida con un solo UUID; tres QR con petición pendiente; un solo trabajador por cola |
+| `PersistenciaPorDefectoTests` | Cierre con pendientes y recuperación con el mismo id; ruta por defecto tras reinicio de `main()`; bloqueo entre dos instancias |
 
 ## Pendiente
 
 - Proteger el endpoint con `[Authorize]` cuando exista autenticación (#82, #84) y registrar el usuario real en el movimiento.
-- Pasar `EscaneoQr__RedesPermitidas` al backend en `docker-compose.yml` y documentarla en `.env.example` (JCbral04, CODEOWNERS).
-- Añadir `python -m unittest discover -s ai/tests` al job `ia` de `ci.yml` (JCbral04, CODEOWNERS).
+- Obtener la aprobación de @JCbral04 (CODEOWNERS) para los cambios en `docker-compose.yml`, `.env.example` y `.github/workflows/ci.yml`. No se ha aprobado ni mergeado nada en este trabajo.
 - Generar e imprimir las etiquetas QR desde el catálogo (hoy se generan a mano o con `generar_video_prueba.py`), y valorar el número de serie por unidad si la regla de separar prendas iguales no es práctica.
 - Probar con cámara física y etiquetas impresas (tamaño mínimo legible, distancia, ajuste de `--frames-liberacion`).
 - `POST /detectar` de `ai/main.py` sigue siendo un placeholder; el lector llama directamente a Inventario.

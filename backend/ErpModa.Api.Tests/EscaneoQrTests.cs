@@ -392,6 +392,16 @@ public class EscaneoQrHttpTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("40001", true)]   // serialization_failure
+    [InlineData("40P01", true)]   // deadlock_detected
+    [InlineData("23505", false)]  // unique_violation: no es un conflicto de serialización
+    [InlineData("42P01", false)]  // undefined_table: error permanente
+    public void ConflictoDeSerializacion_SoloCodigosTransitorios(string sqlState, bool esperado)
+    {
+        Assert.Equal(esperado, ProductosService.EsConflictoSerializacion(sqlState));
+    }
+
     // Fuera de Development y sin EscaneoQr:RedesPermitidas, el endpoint no se expone.
     [Fact]
     public async Task PostEscaneoQr_EnProduccionSinRedesPermitidas_Retorna403()

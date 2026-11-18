@@ -2,6 +2,10 @@ using System.Net;
 using ErpModa.Api.Data;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
+using ErpModa.Api.Proveedores.Interfaces;
+using ErpModa.Api.Proveedores.Services;
+using ErpModa.Api.Proveedores.OrdenesCompra.Interfaces;
+using ErpModa.Api.Proveedores.OrdenesCompra.Services;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Services;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -20,6 +24,8 @@ builder.Services.AddDbContext<ErpModaDbContext>(options =>
 
 builder.Services.AddScoped<IVentasService, VentasService>();
 builder.Services.AddScoped<IProductosService, ProductosService>();
+builder.Services.AddScoped<IProveedoresService, ProveedoresService>();
+builder.Services.AddScoped<IOrdenesCompraService, OrdenesCompraService>();
 
 // HSTS con opciones explicitas (issue #60): MaxAge 30 dias declarado para que
 // comentario y comportamiento coincidan. Preload e IncludeSubdomains quedan

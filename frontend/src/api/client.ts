@@ -1,21 +1,13 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5286/api';
+import { ApiError } from './errors';
+
+export { ApiError } from './errors';
+
+// En desarrollo Vite redirige `/api` al backend (ver vite.config.ts).
+// VITE_API_URL permite apuntar a otra URL en entornos desplegados.
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, string>;
-}
-
-class ApiError extends Error {
-  status: number;
-  statusText: string;
-  data: unknown;
-
-  constructor(status: number, statusText: string, data: unknown) {
-    super(`API Error ${status}: ${statusText}`);
-    this.name = 'ApiError';
-    this.status = status;
-    this.statusText = statusText;
-    this.data = data;
-  }
 }
 
 async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {

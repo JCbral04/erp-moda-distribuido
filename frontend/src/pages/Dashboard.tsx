@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   TrendingUp,
   DollarSign,
@@ -13,6 +13,19 @@ import {
 import { colors, radius } from '../design/tokens';
 import { ventasApi, productosApi } from '../api/endpoints';
 import type { VentasResumen, VentaResponse, ProductoResponse } from '../api/types';
+import {
+  idleState,
+  loadingState,
+  settledState,
+  isPending,
+  type ServiceState,
+} from '../dashboard/loadState';
+import {
+  construirDatosGraficaVentas,
+  contarVariantesStockBajo,
+  esStockBajo,
+  esVentaConfirmada,
+} from '../dashboard/metrics';
 import { SalesAreaChart } from '../components/charts/SalesAreaChart';
 import { SparkChart } from '../components/charts/SparkChart';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -20,63 +33,73 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
 
-export const Dashboard: React.FC = () => {
-  const [resumen, setResumen] = useState<VentasResumen | null>(null);
-  const [ventas, setVentas] = useState<VentaResponse[]>([]);
-  const [productos, setProductos] = useState<ProductoResponse[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date>(() => new Date());
+interface ServiceFailure {
+  label: string;
+  message: string;
+}
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [resumenData, ventasData, productosData] = await Promise.all([
-        ventasApi.getResumen().catch(() => null),
-        ventasApi.getAll().catch(() => []),
-        productosApi.getAll().catch(() => []),
-      ]);
-      setResumen(resumenData);
-      setVentas(ventasData || []);
-      setProductos(productosData || []);
+export const Dashboard: React.FC = () => {
+  // Un estado por servicio: los fallos se hacen visibles y no se disfrazan de
+  // respuestas vacías ni de métricas en cero.
+  const [resumenState, setResumenState] = useState<ServiceState<VentasResumen>>(idleState);
+  const [ventasState, setVentasState] = useState<ServiceState<VentaResponse[]>>(idleState);
+  const [productosState, setProductosState] = useState<ServiceState<ProductoResponse[]>>(idleState);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date>(() => new Date());
+  const requestIdRef = useRef(0);
+
+  const fetchData = useCallback(async (fromUserAction = false) => {
+    const requestId = ++requestIdRef.current;
+    if (fromUserAction) setIsRefreshing(true);
+    setResumenState(loadingState);
+    setVentasState(loadingState);
+    setProductosState(loadingState);
+
+    const [resumenResult, ventasResult, productosResult] = await Promise.allSettled([
+      ventasApi.getResumen(),
+      ventasApi.getAll(),
+      productosApi.getAll(),
+    ]);
+
+    // Descarta respuestas tardías de una consulta anterior (reintento/desmontaje).
+    if (requestId !== requestIdRef.current) return;
+
+    setResumenState((prev) => settledState(prev, resumenResult));
+    setVentasState((prev) => settledState(prev, ventasResult));
+    setProductosState((prev) => settledState(prev, productosResult));
+    setIsInitialLoad(false);
+    setIsRefreshing(false);
+    if ([resumenResult, ventasResult, productosResult].some((r) => r.status === 'fulfilled')) {
       setLastUpdated(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al conectar con los servicios');
-    } finally {
-      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let ignore = false;
-    const load = async () => {
-      try {
-        const [resumenData, ventasData, productosData] = await Promise.all([
-          ventasApi.getResumen().catch(() => null),
-          ventasApi.getAll().catch(() => []),
-          productosApi.getAll().catch(() => []),
-        ]);
-        if (!ignore) {
-          setResumen(resumenData);
-          setVentas(ventasData || []);
-          setProductos(productosData || []);
-          setLastUpdated(new Date());
-          setLoading(false);
-        }
-      } catch (err) {
-        if (!ignore) {
-          setError(err instanceof Error ? err.message : 'Error al conectar con los servicios');
-          setLoading(false);
-        }
-      }
-    };
-
-    void load();
+    void fetchData();
     return () => {
-      ignore = true;
+      // Invalida respuestas pendientes al desmontar o en el segundo mount de StrictMode.
+      requestIdRef.current += 1;
     };
-  }, []);
+  }, [fetchData]);
+
+  const resumen = resumenState.data;
+  const ventas = useMemo(() => ventasState.data ?? [], [ventasState.data]);
+  const productos = useMemo(() => productosState.data ?? [], [productosState.data]);
+
+  const failures: ServiceFailure[] = [];
+  if (resumenState.status === 'error') {
+    failures.push({ label: 'Resumen de ventas', message: resumenState.error ?? 'Sin detalle' });
+  }
+  if (ventasState.status === 'error') {
+    failures.push({ label: 'Ventas', message: ventasState.error ?? 'Sin detalle' });
+  }
+  if (productosState.status === 'error') {
+    failures.push({ label: 'Productos', message: productosState.error ?? 'Sin detalle' });
+  }
+  const resumenUnavailable = resumenState.status === 'error';
+  const ventasUnavailable = ventasState.status === 'error';
+  const productosUnavailable = productosState.status === 'error';
 
   // Contextual Greeting based on lastUpdated time
   const currentHour = lastUpdated.getHours();
@@ -94,44 +117,19 @@ export const Dashboard: React.FC = () => {
 
   const displayDate = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
 
-  // Computed Metrics
+  // Computed Metrics (el resumen del backend ya filtra solo ventas confirmadas)
   const totalIngresos = resumen?.totalVentasConfirmadas ?? 0;
-  const cantidadVentas = resumen?.cantidadVentas ?? ventas.length;
+  const cantidadVentas = resumen?.cantidadVentas ?? 0;
   const ticketPromedio =
     resumen && resumen.ventasConfirmadas > 0
       ? resumen.totalVentasConfirmadas / resumen.ventasConfirmadas
       : 0;
 
-  // Stock Alerts count: variants with stock <= 5
-  const stockCriticoCount = useMemo(() => {
-    return productos.reduce((acc, prod) => {
-      const lowVariants = (prod.variantes || []).filter((v) => v.stock <= 5);
-      return acc + lowVariants.length;
-    }, 0);
-  }, [productos]);
+  // Alerta de stock bajo según HU-002: estrictamente menos de 5 unidades.
+  const stockCriticoCount = useMemo(() => contarVariantesStockBajo(productos), [productos]);
 
-  // Aggregated Sales Data for Recharts AreaChart
-  const salesChartData = useMemo(() => {
-    if (!ventas || ventas.length === 0) return [];
-
-    const grouped = new Map<string, { total: number; count: number }>();
-    ventas.forEach((v) => {
-      const dateKey = v.fecha ? v.fecha.split('T')[0] : 'Hoy';
-      const existing = grouped.get(dateKey) || { total: 0, count: 0 };
-      grouped.set(dateKey, {
-        total: existing.total + (v.total || 0),
-        count: existing.count + 1,
-      });
-    });
-
-    return Array.from(grouped.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, data]) => ({
-        date,
-        total: data.total,
-        count: data.count,
-      }));
-  }, [ventas]);
+  // Facturación de la gráfica: únicamente ventas confirmadas.
+  const salesChartData = useMemo(() => construirDatosGraficaVentas(ventas), [ventas]);
 
   // Mini sparkline data if historical points exist
   const sparkData = useMemo(() => {
@@ -242,8 +240,8 @@ export const Dashboard: React.FC = () => {
           <Button
             variant="secondary"
             size="sm"
-            onClick={fetchData}
-            isLoading={loading}
+            onClick={() => void fetchData(true)}
+            isLoading={isRefreshing || isInitialLoad}
             aria-label="Actualizar datos del dashboard"
             leftIcon={<RefreshCw size={13} />}
           >
@@ -251,6 +249,40 @@ export const Dashboard: React.FC = () => {
           </Button>
         </div>
       </section>
+
+      {failures.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            gap: '12px',
+            alignItems: 'flex-start',
+            padding: '14px 16px',
+            backgroundColor: 'rgba(224, 82, 82, 0.08)',
+            border: `1px solid ${colors.accent.danger}`,
+            borderRadius: radius.md,
+            color: colors.text.primary,
+          }}
+        >
+          <AlertTriangle size={18} style={{ color: colors.accent.danger, flexShrink: 0 }} />
+          <div style={{ fontSize: '13px' }}>
+            <p style={{ fontWeight: 600, marginBottom: '4px' }}>
+              No se pudo actualizar parte del dashboard
+            </p>
+            <ul style={{ margin: '0 0 4px 0', paddingLeft: '18px' }}>
+              {failures.map((failure) => (
+                <li key={failure.label}>
+                  <strong>{failure.label}:</strong> {failure.message}
+                </li>
+              ))}
+            </ul>
+            <span style={{ color: colors.text.secondary }}>
+              Los indicadores de los servicios que no respondieron muestran «N/D». Se conservan
+              los datos de los servicios que sí respondieron. Puede reintentar con «Sincronizar».
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* 8.2 KPI Cards — Staggered Entry with auto-fill (minmax(200px, 1fr)) */}
       <section
@@ -286,7 +318,7 @@ export const Dashboard: React.FC = () => {
               <Receipt size={16} style={{ color: colors.text.secondary }} aria-hidden="true" />
             </div>
 
-            {loading ? (
+            {isPending(resumenState) ? (
               <Skeleton width="90px" height="34px" />
             ) : (
               <div
@@ -307,10 +339,10 @@ export const Dashboard: React.FC = () => {
                   }}
                   className="tabular-nums"
                 >
-                  {cantidadVentas}
+                  {resumenUnavailable ? 'N/D' : cantidadVentas}
                 </span>
 
-                {resumen && resumen.ventasConfirmadas > 0 && (
+                {!resumenUnavailable && resumen && resumen.ventasConfirmadas > 0 && (
                   <span
                     style={{
                       fontSize: '11px',
@@ -355,7 +387,7 @@ export const Dashboard: React.FC = () => {
               <DollarSign size={16} style={{ color: colors.text.secondary }} aria-hidden="true" />
             </div>
 
-            {loading ? (
+            {isPending(resumenState) ? (
               <Skeleton width="130px" height="34px" />
             ) : (
               <div
@@ -376,10 +408,12 @@ export const Dashboard: React.FC = () => {
                   }}
                   className="tabular-nums"
                 >
-                  ${totalIngresos.toLocaleString('es-CO')}
+                  {resumenUnavailable ? 'N/D' : `$${totalIngresos.toLocaleString('es-CO')}`}
                 </span>
 
-                {sparkData && <SparkChart data={sparkData} color={colors.accent.champagne} />}
+                {!resumenUnavailable && sparkData && (
+                  <SparkChart data={sparkData} color={colors.accent.champagne} />
+                )}
               </div>
             )}
           </Card>
@@ -410,7 +444,7 @@ export const Dashboard: React.FC = () => {
               <Percent size={16} style={{ color: colors.text.secondary }} aria-hidden="true" />
             </div>
 
-            {loading ? (
+            {isPending(resumenState) ? (
               <Skeleton width="110px" height="34px" />
             ) : (
               <div
@@ -430,7 +464,9 @@ export const Dashboard: React.FC = () => {
                   }}
                   className="tabular-nums"
                 >
-                  ${Math.round(ticketPromedio).toLocaleString('es-CO')}
+                  {resumenUnavailable
+                    ? 'N/D'
+                    : `$${Math.round(ticketPromedio).toLocaleString('es-CO')}`}
                 </span>
 
                 <span
@@ -472,7 +508,7 @@ export const Dashboard: React.FC = () => {
               <Shirt size={16} style={{ color: colors.text.secondary }} aria-hidden="true" />
             </div>
 
-            {loading ? (
+            {isPending(productosState) ? (
               <Skeleton width="70px" height="34px" />
             ) : (
               <div
@@ -492,7 +528,7 @@ export const Dashboard: React.FC = () => {
                   }}
                   className="tabular-nums"
                 >
-                  {productos.filter((p) => p.activo).length}
+                  {productosUnavailable ? 'N/D' : productos.filter((p) => p.activo).length}
                 </span>
 
                 <span
@@ -501,7 +537,7 @@ export const Dashboard: React.FC = () => {
                     color: colors.text.tertiary,
                   }}
                 >
-                  {productos.length} registrados
+                  {productosUnavailable ? 'sin datos' : `${productos.length} registrados`}
                 </span>
               </div>
             )}
@@ -533,13 +569,16 @@ export const Dashboard: React.FC = () => {
               <AlertTriangle
                 size={16}
                 style={{
-                  color: stockCriticoCount > 0 ? colors.accent.warning : colors.text.secondary,
+                  color:
+                    !productosUnavailable && stockCriticoCount > 0
+                      ? colors.accent.warning
+                      : colors.text.secondary,
                 }}
                 aria-hidden="true"
               />
             </div>
 
-            {loading ? (
+            {isPending(productosState) ? (
               <Skeleton width="70px" height="34px" />
             ) : (
               <div
@@ -554,21 +593,29 @@ export const Dashboard: React.FC = () => {
                     fontFamily: '"Geist Mono", monospace',
                     fontSize: '28px',
                     fontWeight: 600,
-                    color: stockCriticoCount > 0 ? colors.accent.warning : colors.text.primary,
+                    color:
+                      !productosUnavailable && stockCriticoCount > 0
+                        ? colors.accent.warning
+                        : colors.text.primary,
                     lineHeight: 1,
                   }}
                   className="tabular-nums"
                 >
-                  {stockCriticoCount}
+                  {productosUnavailable ? 'N/D' : stockCriticoCount}
                 </span>
 
                 <span
                   style={{
                     fontSize: '11px',
                     fontWeight: 500,
-                    color: stockCriticoCount > 0 ? colors.accent.warning : colors.accent.success,
-                    backgroundColor:
-                      stockCriticoCount > 0
+                    color: productosUnavailable
+                      ? colors.text.tertiary
+                      : stockCriticoCount > 0
+                        ? colors.accent.warning
+                        : colors.accent.success,
+                    backgroundColor: productosUnavailable
+                      ? 'rgba(255, 255, 255, 0.04)'
+                      : stockCriticoCount > 0
                         ? 'rgba(212, 160, 53, 0.1)'
                         : 'rgba(82, 192, 122, 0.1)',
                     padding: '2px 6px',
@@ -576,7 +623,11 @@ export const Dashboard: React.FC = () => {
                     fontFamily: '"Geist Mono", monospace',
                   }}
                 >
-                  {stockCriticoCount > 0 ? 'Crítico (≤5)' : 'Óptimo'}
+                  {productosUnavailable
+                    ? 'Sin datos'
+                    : stockCriticoCount > 0
+                      ? 'Crítico (<5)'
+                      : 'Óptimo'}
                 </span>
               </div>
             )}
@@ -619,15 +670,19 @@ export const Dashboard: React.FC = () => {
           </CardHeader>
 
           <CardContent>
-            {error ? (
+            {ventasUnavailable ? (
               <EmptyState
-                title="Conexión no disponible"
-                description={error}
+                title="Ventas no disponibles"
+                description={ventasState.error ?? 'No se pudo consultar el servicio de ventas.'}
                 actionLabel="Reintentar"
-                onAction={fetchData}
+                onAction={() => void fetchData(true)}
               />
             ) : (
-              <SalesAreaChart data={salesChartData} isLoading={loading} height={290} />
+              <SalesAreaChart
+                data={salesChartData}
+                isLoading={isPending(ventasState)}
+                height={290}
+              />
             )}
           </CardContent>
         </Card>
@@ -645,7 +700,14 @@ export const Dashboard: React.FC = () => {
           </CardHeader>
 
           <CardContent>
-            {loading ? (
+            {productosUnavailable ? (
+              <EmptyState
+                title="Catálogo no disponible"
+                description={productosState.error ?? 'No se pudo consultar el servicio de productos.'}
+                actionLabel="Reintentar"
+                onAction={() => void fetchData(true)}
+              />
+            ) : isPending(productosState) ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {[1, 2, 3, 4].map((i) => (
                   <div
@@ -733,7 +795,9 @@ export const Dashboard: React.FC = () => {
                         <p
                           style={{
                             fontSize: '11px',
-                            color: totalStock <= 5 ? colors.accent.warning : colors.accent.success,
+                            color: esStockBajo(totalStock)
+                              ? colors.accent.warning
+                              : colors.accent.success,
                             fontFamily: '"Geist Mono", monospace',
                             marginTop: '2px',
                           }}
@@ -765,7 +829,14 @@ export const Dashboard: React.FC = () => {
           </CardHeader>
 
           <CardContent>
-            {loading ? (
+            {ventasUnavailable ? (
+              <EmptyState
+                title="Actividad no disponible"
+                description={ventasState.error ?? 'No se pudo consultar el servicio de ventas.'}
+                actionLabel="Reintentar"
+                onAction={() => void fetchData(true)}
+              />
+            ) : isPending(ventasState) ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {[1, 2, 3].map((i) => (
                   <div
@@ -794,7 +865,9 @@ export const Dashboard: React.FC = () => {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {ventas.slice(0, 5).map((v) => {
-                  const isConfirmada = v.estado === 'Confirmada';
+                  // La actividad reciente muestra todos los estados; la facturación
+                  // (gráfica y KPIs) solo usa ventas confirmadas.
+                  const isConfirmada = esVentaConfirmada(v);
                   const isAnulada = v.estado === 'Anulada';
 
                   return (

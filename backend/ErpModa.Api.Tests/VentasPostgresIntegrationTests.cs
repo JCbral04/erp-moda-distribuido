@@ -209,8 +209,8 @@ public class VentasPostgresIntegrationTests : IAsyncLifetime
         var s1 = new VentasService(ctx1);
         var s2 = new VentasService(ctx2);
 
-        var t1 = Task.Run(async () => { try { await s1.ConfirmarAsync(venta.Id); return "ok"; } catch (Exception e) { return e.GetType().Name; } });
-        var t2 = Task.Run(async () => { try { await s2.ConfirmarAsync(venta.Id); return "ok"; } catch (Exception e) { return e.GetType().Name; } });
+        var t1 = Task.Run(async () => { try { await s1.ConfirmarAsync(venta.Id); return "ok"; } catch (InvalidOperationException) { return nameof(InvalidOperationException); } catch (DbUpdateException) { return nameof(DbUpdateException); } });
+        var t2 = Task.Run(async () => { try { await s2.ConfirmarAsync(venta.Id); return "ok"; } catch (InvalidOperationException) { return nameof(InvalidOperationException); } catch (DbUpdateException) { return nameof(DbUpdateException); } });
         var resultados = await Task.WhenAll(t1, t2);
 
         Assert.Contains("ok", resultados);
@@ -242,8 +242,8 @@ public class VentasPostgresIntegrationTests : IAsyncLifetime
         var s1 = new VentasService(ctx1);
         var s2 = new VentasService(ctx2);
 
-        var t1 = Task.Run(async () => { try { await s1.AnularAsync(venta.Id, new AnularVentaDto { Motivo = "m1" }); return "ok"; } catch (Exception e) { return e.GetType().Name; } });
-        var t2 = Task.Run(async () => { try { await s2.AnularAsync(venta.Id, new AnularVentaDto { Motivo = "m2" }); return "ok"; } catch (Exception e) { return e.GetType().Name; } });
+        var t1 = Task.Run(async () => { try { await s1.AnularAsync(venta.Id, new AnularVentaDto { Motivo = "m1" }); return "ok"; } catch (InvalidOperationException) { return nameof(InvalidOperationException); } catch (DbUpdateException) { return nameof(DbUpdateException); } });
+        var t2 = Task.Run(async () => { try { await s2.AnularAsync(venta.Id, new AnularVentaDto { Motivo = "m2" }); return "ok"; } catch (InvalidOperationException) { return nameof(InvalidOperationException); } catch (DbUpdateException) { return nameof(DbUpdateException); } });
         var resultados = await Task.WhenAll(t1, t2);
 
         Assert.Contains("ok", resultados);
@@ -284,7 +284,11 @@ public class VentasPostgresIntegrationTests : IAsyncLifetime
                     await service.ConfirmarAsync(id);
                     return;
                 }
-                catch (Exception ex) when (EsConflictoSerializacion(ex))
+                catch (DbUpdateException ex) when (EsConflictoSerializacion(ex))
+                {
+                    await Task.Delay(25 * (intento + 1));
+                }
+                catch (InvalidOperationException ex) when (EsConflictoSerializacion(ex))
                 {
                     await Task.Delay(25 * (intento + 1));
                 }

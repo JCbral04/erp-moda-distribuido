@@ -31,7 +31,12 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         correlation_id = entrante if es_correlation_id_valido(entrante) else uuid.uuid4().hex
 
         request.state.correlation_id = correlation_id
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("correlation_id=%s method=%s path=%s", correlation_id, request.method, request.url.path)
+            from fastapi.responses import JSONResponse
+            response = JSONResponse(status_code=500, content={"detail": "error interno"})
         response.headers[_CORRELATION_HEADER] = correlation_id
         logger.info("correlation_id=%s method=%s path=%s", correlation_id, request.method, request.url.path)
         return response

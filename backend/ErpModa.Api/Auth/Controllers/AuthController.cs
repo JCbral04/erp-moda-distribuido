@@ -19,13 +19,11 @@ namespace ErpModa.Api.Auth.Controllers
         private const string BootstrapHeader = "X-Bootstrap-Token";
         private readonly IAuthService _auth;
         private readonly string? _bootstrapToken;
-        private readonly ILogger<AuthController> _logger;
 
-        public AuthController(IAuthService auth, Microsoft.Extensions.Configuration.IConfiguration configuration, ILogger<AuthController> logger)
+        public AuthController(IAuthService auth, Microsoft.Extensions.Configuration.IConfiguration configuration)
         {
             _auth = auth ?? throw new ArgumentNullException(nameof(auth));
             _bootstrapToken = configuration["Auth:BootstrapToken"];
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <summary>
@@ -79,8 +77,6 @@ namespace ErpModa.Api.Auth.Controllers
             }
             catch (CredencialesInvalidasException ex)
             {
-                _logger.LogWarning("Autenticacion fallida CorrelationId={CorrelationId} Result={Result}",
-                    CorrelationIdMiddleware.Get(HttpContext), "401");
                 return Unauthorized(new { mensaje = ex.Message });
             }
             catch (ConfiguracionAuthInvalidaException ex)

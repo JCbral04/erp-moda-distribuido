@@ -4,7 +4,10 @@ using ErpModa.Api.Ventas.DTOs;
 using ErpModa.Api.Ventas.Exceptions;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ErpModa.Api.Tests;
 
@@ -23,7 +26,7 @@ public class VentasServiceTests : IDisposable
             .Options;
 
         _context = new ErpModaDbContext(options);
-        _service = new VentasService(_context);
+        _service = new VentasService(_context, NullLogger<VentasService>.Instance, new HttpContextAccessor());
 
         // Variante por defecto con stock de sobra para los tests que confirman ventas.
         _varianteId = CrearVarianteConStockAsync(1000).GetAwaiter().GetResult();

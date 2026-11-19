@@ -5,8 +5,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using ErpModa.Api.Auth.DTOs;
 using ErpModa.Api.Auth.Services;
+using ErpModa.Api.Middleware;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace ErpModa.Api.Auth.Controllers
 {

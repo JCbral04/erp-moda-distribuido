@@ -1,3 +1,4 @@
+using ErpModa.Api.Auth.Models;
 using ErpModa.Api.Inventario.Models;
 using ErpModa.Api.Proveedores.Models;
 using ErpModa.Api.Proveedores.OrdenesCompra.Models;
@@ -12,6 +13,9 @@ namespace ErpModa.Api.Data
             : base(options)
         {
         }
+
+        // Autenticación (issue #82)
+        public DbSet<Usuario> Usuarios { get; set; }
 
         // Inventario
         public DbSet<Producto> Productos { get; set; }
@@ -34,6 +38,19 @@ namespace ErpModa.Api.Data
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            // Autenticación: correo normalizado y único, rol como texto.
+            modelBuilder.Entity<Usuario>(entity =>
+            {
+                entity.ToTable("usuarios");
+                entity.HasKey(u => u.Id);
+                entity.Property(u => u.Email).IsRequired().HasMaxLength(256);
+                entity.Property(u => u.PasswordHash).IsRequired().HasMaxLength(255);
+                entity.Property(u => u.Rol).HasConversion<string>().HasMaxLength(20).IsRequired();
+                entity.Property(u => u.CreadoEn).IsRequired();
+                entity.Property(u => u.ActualizadoEn).IsRequired();
+                entity.HasIndex(u => u.Email).IsUnique().HasDatabaseName("ux_usuarios_email");
+            });
 
             // Inventario - Producto 1:N Variantes
             modelBuilder.Entity<Producto>()

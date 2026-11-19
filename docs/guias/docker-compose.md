@@ -91,6 +91,55 @@ docker compose down -v                        # Detener todo Y borrar los datos 
 docker compose build --no-cache <servicio>    # Reconstruir sin caché
 ```
 
+## Pruebas de integración con PostgreSQL 16 (issues #64 / #90)
+
+La suite `backend/ErpModa.Api.Tests/VentasPostgresIntegrationTests.cs` (PR #114) valida `VentasService` contra un **PostgreSQL 16 real**: levanta su propio contenedor con Testcontainers, aplica los esquemas embebidos `docs/inventario/schema.sql` y `docs/ventas/schema.sql` y cubre persistencia, descuento de stock, facturas, anulación, concurrencia y restricciones (incluidas `ck_ventas_total_coherente` y el singleton `contador_factura`). **No la dupliques ni la modifiques**: reutilízala tal cual.
+
+Los tests InMemory siguen siendo las pruebas unitarias rápidas (job `backend` de CI); los de integración corren **solo** en el job `integration-postgres`.
+
+### Ejecutar la suite en local
+
+Solo se necesita Docker en ejecución (Testcontainers usa `postgres:16-alpine`). El compose no es obligatorio para la suite, pero el servicio `db` permite aplicar y verificar los esquemas oficiales igual que hace el job de CI:
+
+```bash
+# 1) Credenciales de PRUEBA (nunca reales): el compose exige POSTGRES_PASSWORD
+export POSTGRES_USER=erpuser
+export POSTGRES_PASSWORD=erp_password
+export POSTGRES_DB=erp_moda
+
+# 2) Levantar únicamente PostgreSQL (sin backend / redis / IA)
+docker compose up -d db
+
+# 3) Aplicar los esquemas oficiales (los MISMOS archivos que embebe la suite)
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < docs/inventario/schema.sql
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < docs/ventas/schema.sql
+
+# 4) Restaurar, compilar y ejecutar SOLO la suite de integración (13 pruebas)
+dotnet restore backend/ErpModa.sln
+dotnet build backend/ErpModa.sln -c Release --no-restore
+dotnet test  backend/ErpModa.sln -c Release --no-build --no-restore \
+  --filter "FullyQualifiedName~VentasPostgresIntegrationTests"
+
+# 5) Unit tests InMemory (excluyendo la suite de integración)
+dotnet test backend/ErpModa.sln -c Release --no-build --no-restore \
+  --filter "FullyQualifiedName!~VentasPostgresIntegrationTests"
+
+# 6) Limpieza
+docker compose down -v
+```
+
+> En PowerShell la redirección `<` no existe; usa `Get-Content docs/inventario/schema.sql -Raw | docker compose exec -T db psql -U erpuser -d erp_moda -v ON_ERROR_STOP=1` (y lo mismo para `ventas`).
+
+> Si ya aplicaste los esquemas en un `docker compose up` anterior, el paso 3 fallará con `relation "productos" already exists`. El entorno de integración es desechable: ejecuta `docker compose down -v` antes de repetirlo.
+
+### Qué garantiza el job `integration-postgres`
+
+- `postgres:16-alpine` como service container con healthcheck `pg_isready` y credenciales de prueba.
+- `psql -v ON_ERROR_STOP=1` aplica ambos esquemas: cualquier error SQL falla el job.
+- Un bloque `DO $$ ... $$` verifica que existan `ck_ventas_total_coherente` y `ck_contador_factura_singleton`, y que `contador_factura` tenga exactamente la fila `id=1`.
+- La suite de integración falla si el modelo EF Core y los esquemas SQL divergen (no hay migraciones: la estrategia sigue siendo SQL manual).
+- El job no puede pasar "en vacío": un paso previo comprueba que los tests de integración fueron descubiertos.
+
 ## Pendiente (Sprint 1)
 
 - Evaluar migración de la base de datos: Supabase (Postgres gestionado) o SQL Server. Ambas opciones son compatibles con EF Core cambiando solo el proveedor y el connection string.

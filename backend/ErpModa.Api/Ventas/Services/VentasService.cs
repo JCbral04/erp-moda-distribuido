@@ -4,12 +4,15 @@ using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
 using ErpModa.Api.Data;
+using ErpModa.Api.Middleware;
 using ErpModa.Api.Inventario.Models;
 using ErpModa.Api.Ventas.DTOs;
 using ErpModa.Api.Ventas.Exceptions;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace ErpModa.Api.Ventas.Services
 {
@@ -21,11 +24,23 @@ namespace ErpModa.Api.Ventas.Services
         private static readonly TimeSpan ZonaLocalUtc = TimeSpan.FromHours(-5);
 
         private readonly ErpModaDbContext _context;
+        private readonly ILogger<VentasService> _logger;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
-        public VentasService(ErpModaDbContext context)
+        public VentasService(ErpModaDbContext context, ILogger<VentasService> logger, IHttpContextAccessor httpContextAccessor)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         }
+
+        private string CorrelationId =>
+            _httpContextAccessor.HttpContext is null
+                ? "sin-contexto-http"
+                : CorrelationIdMiddleware.Get(_httpContextAccessor.HttpContext);
+
+        private string? UserId =>
+            _httpContextAccessor.HttpContext?.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
         public async Task<IEnumerable<VentaResponseDto>> GetAllAsync(string? estado = null, DateTime? fecha = null)
         {
@@ -137,6 +152,9 @@ namespace ErpModa.Api.Ventas.Services
             _context.Ventas.Add(venta);
             await _context.SaveChangesAsync();
 
+            _logger.LogInformation("Venta creada VentaId={VentaId} UserId={UserId} CorrelationId={CorrelationId} Result={Result}",
+                venta.Id, UserId, CorrelationId, "creada");
+
             return MapToResponse(venta);
         }
 
@@ -180,6 +198,9 @@ namespace ErpModa.Api.Ventas.Services
 
                 await _context.SaveChangesAsync();
             });
+
+            _logger.LogInformation("Venta confirmada VentaId={VentaId} UserId={UserId} CorrelationId={CorrelationId} Result={Result}",
+                venta!.Id, UserId, CorrelationId, "confirmada");
 
             return MapToResponse(venta!);
         }
@@ -227,6 +248,9 @@ namespace ErpModa.Api.Ventas.Services
 
                 await _context.SaveChangesAsync();
             });
+
+            _logger.LogInformation("Venta anulada VentaId={VentaId} UserId={UserId} CorrelationId={CorrelationId} Result={Result}",
+                venta!.Id, UserId, CorrelationId, "anulada");
 
             return MapToResponse(venta!);
         }

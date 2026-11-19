@@ -6,6 +6,7 @@ using ErpModa.Api.Data;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
 using ErpModa.Api.Ventas.Interfaces;
+using ErpModa.Api.Middleware;
 using ErpModa.Api.Ventas.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -116,6 +117,7 @@ if (claveEfimera)
     app.Logger.LogWarning("Jwt:Key no configurada: se genero una clave efimera de desarrollo. Configure User Secrets antes de desplegar.");
 
 app.UseForwardedHeaders();
+app.UseMiddleware<CorrelationIdMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {

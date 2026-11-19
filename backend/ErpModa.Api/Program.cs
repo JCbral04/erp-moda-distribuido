@@ -3,6 +3,8 @@ using System.Text;
 using ErpModa.Api.Auth.Configuration;
 using ErpModa.Api.Auth.Services;
 using ErpModa.Api.Data;
+using ErpModa.Api.Middleware;
+using System.Threading.RateLimiting;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
 using ErpModa.Api.Ventas.Interfaces;
@@ -107,6 +109,40 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
         builder.Configuration["ProxyTrustedIP"] ?? "127.0.0.1"));
 });
 
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsync(
+            "{\"codigo\":\"rate_limit_exceeded\",\"mensaje\":\"Demasiadas solicitudes. Intente mas tarde.\"}",
+            cancellationToken);
+    };
+
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
+
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<ErpModaDbContext>();
 
@@ -116,6 +152,8 @@ if (claveEfimera)
     app.Logger.LogWarning("Jwt:Key no configurada: se genero una clave efimera de desarrollo. Configure User Secrets antes de desplegar.");
 
 app.UseForwardedHeaders();
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseRateLimiter();
 
 if (app.Environment.IsDevelopment())
 {

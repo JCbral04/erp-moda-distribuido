@@ -40,6 +40,8 @@ services:
       ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=${POSTGRES_DB:-erp_moda};Username=${POSTGRES_USER:-erpuser};Password=${POSTGRES_PASSWORD}"
       Redis__ConnectionString: redis:6379
       IaService__BaseUrl: http://ia:8000
+      # Redes desde las que se acepta el escaneo QR. Vacío = denegar en Production.
+      EscaneoQr__RedesPermitidas: ${ESCANEO_QR_REDES_PERMITIDAS:-}
     depends_on:
       db:
         condition: service_healthy

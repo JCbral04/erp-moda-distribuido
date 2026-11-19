@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using ErpModa.Api.Inventario.DTOs;
+using ErpModa.Api.Inventario.Filters;
 using ErpModa.Api.Inventario.Interfaces;
+using ErpModa.Api.Inventario.Services;
 
 namespace ErpModa.Api.Inventario.Controllers
 {
@@ -58,6 +60,30 @@ namespace ErpModa.Api.Inventario.Controllers
             catch (ArgumentException ex)
             {
                 return BadRequest(ex.Message);
+            }
+        }
+
+        // Lo llama el lector de QR (ai/deteccion.py): suma una unidad al stock de la variante.
+        // Idempotente por idEscaneo: un reintento con el mismo id devuelve 200 con
+        // duplicado = true sin sumar otra unidad. Restringido por red hasta #84.
+        [HttpPost("escaneo-qr")]
+        [RedPermitidaEscaneoQr]
+        public async Task<ActionResult<EscaneoQrResponseDto>> RegistrarEscaneoQr([FromBody] EscaneoQrDto escaneoDto)
+        {
+            try
+            {
+                var result = await _service.RegistrarEscaneoQrAsync(escaneoDto.Sku, escaneoDto.IdEscaneo);
+                if (result == null)
+                    return NotFound($"No existe una variante con SKU '{escaneoDto.Sku.Trim()}'.");
+                return Ok(result);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (EscaneoQrConflictoException ex)
+            {
+                return Conflict(ex.Message);
             }
         }
 

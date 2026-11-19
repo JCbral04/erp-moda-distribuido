@@ -1,5 +1,7 @@
 # Guía: Detección de prendas con cámara (prueba de concepto)
 
+> **Reemplazada (18/11/2026):** el detector por sustracción de fondo se sustituyó por un lector de QR que suma stock por SKU. Ver `docs/guias/lector-qr-inventario.md`. Esta guía se conserva como registro del issue #7.
+
 **Issue relacionado:** #7 · **Responsable:** Jair Enrique Polo Chamorro (Inventario + IA) · **Fecha:** 15/09/2026
 
 ## ¿Qué se hizo?

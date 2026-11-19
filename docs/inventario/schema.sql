@@ -91,4 +91,11 @@ CREATE INDEX ix_mov_variante_id ON movimientos_stock (variante_id);
 CREATE INDEX ix_mov_tipo        ON movimientos_stock (tipo);
 CREATE INDEX ix_mov_creado_en   ON movimientos_stock (creado_en);
 
+-- Idempotencia del lector de QR (#107): cada escaneo lleva un id unico que el
+-- backend guarda en motivo ('Escaneo QR <uuid>'). El indice impide registrar dos
+-- veces el mismo escaneo aunque el lector reintente, y acelera la busqueda del
+-- reintento. Es parcial: no afecta los motivos de ventas, anulaciones ni ajustes.
+CREATE UNIQUE INDEX uq_mov_escaneo_qr ON movimientos_stock (motivo)
+    WHERE tipo = 'deteccion_ia' AND motivo LIKE 'Escaneo QR %';
+
 COMMIT;

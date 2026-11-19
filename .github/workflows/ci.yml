@@ -45,3 +45,6 @@ jobs:
 
       - name: Verificar sintaxis de los scripts de IA
         run: python -m py_compile ai/main.py ai/deteccion.py ai/generar_video_prueba.py
+
+      - name: Ejecutar pruebas del lector QR
+        run: python -m unittest discover -s ai/tests -v

@@ -95,6 +95,8 @@ namespace ErpModa.Api.Ventas.Services
 
         public async Task<VentaResponseDto> CreateAsync(CrearVentaDto crearDto)
         {
+            try
+            {
             var metodoPago = ParseMetodoPago(crearDto.MetodoPago);
 
             if (crearDto.Detalles == null || !crearDto.Detalles.Any())
@@ -156,10 +158,19 @@ namespace ErpModa.Api.Ventas.Services
                 venta.Id, UserId, CorrelationId, "creada");
 
             return MapToResponse(venta);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Fallo al crear venta UserId={UserId} CorrelationId={CorrelationId} Result={Result}",
+                    UserId, CorrelationId, "error");
+                throw;
+            }
         }
 
         public async Task<VentaResponseDto> ConfirmarAsync(int id)
         {
+            try
+            {
             // La carga de la venta y la validación de estado se ejecutan DENTRO de la
             // transacción para que la decisión se tome en el mismo ámbito transaccional
             // que el descuento de stock y la factura. Esto evita el TOCTOU donde la
@@ -203,10 +214,19 @@ namespace ErpModa.Api.Ventas.Services
                 venta!.Id, UserId, CorrelationId, "confirmada");
 
             return MapToResponse(venta!);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Fallo al confirmar venta VentaId={VentaId} UserId={UserId} CorrelationId={CorrelationId} Result={Result}",
+                    id, UserId, CorrelationId, "error");
+                throw;
+            }
         }
 
         public async Task<VentaResponseDto> AnularAsync(int id, AnularVentaDto anularDto)
         {
+            try
+            {
             // La validación del motivo no depende del estado en BD y se mantiene
             // fuera de la transacción. La carga de la venta y la comprobación de
             // "ya anulada" van DENTRO de la transacción, con el mismo patrón de
@@ -253,6 +273,13 @@ namespace ErpModa.Api.Ventas.Services
                 venta!.Id, UserId, CorrelationId, "anulada");
 
             return MapToResponse(venta!);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Fallo al anular venta VentaId={VentaId} UserId={UserId} CorrelationId={CorrelationId} Result={Result}",
+                    id, UserId, CorrelationId, "error");
+                throw;
+            }
         }
 
         private async Task<Venta> GetVentaOrThrowAsync(int id)

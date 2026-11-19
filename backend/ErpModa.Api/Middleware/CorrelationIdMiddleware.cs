@@ -27,12 +27,20 @@ public class CorrelationIdMiddleware
 
         using (_logger.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = correlationId }))
         {
-            await _next(context);
-
-            if (context.Response.StatusCode is 401 or 403)
+            try
             {
-                _logger.LogWarning("Solicitud rechazada StatusCode={StatusCode} CorrelationId={CorrelationId} Path={Path}",
-                    context.Response.StatusCode, correlationId, context.Request.Path);
+                await _next(context);
+
+                if (context.Response.StatusCode is 401 or 403)
+                {
+                    _logger.LogWarning("Solicitud rechazada StatusCode={StatusCode} CorrelationId={CorrelationId} Path={Path}",
+                        context.Response.StatusCode, correlationId, context.Request.Path);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error no controlado CorrelationId={CorrelationId} Path={Path}", correlationId, context.Request.Path);
+                throw;
             }
         }
     }

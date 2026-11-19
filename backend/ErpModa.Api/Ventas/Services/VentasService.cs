@@ -10,7 +10,6 @@ using ErpModa.Api.Ventas.Exceptions;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Models;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 
 namespace ErpModa.Api.Ventas.Services
 {

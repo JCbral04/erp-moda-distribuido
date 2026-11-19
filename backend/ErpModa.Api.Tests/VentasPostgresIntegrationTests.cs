@@ -303,24 +303,42 @@ public class VentasPostgresIntegrationTests : IAsyncLifetime
     public async Task Atomicidad_ConfirmacionFallida_NoCambiaEstadoNiStock()
     {
         await LimpiarAsync();
-        var varianteId = await CrearVarianteAsync(1);
+        var varianteId = await CrearVarianteAsync(10);
         await using var context = CreateContext();
         var service = new VentasService(context);
         var venta = await service.CreateAsync(new CrearVentaDto
         {
             MetodoPago = "Efectivo",
-            Detalles = new List<DetalleCrearDto> { new() { VarianteId = varianteId, Cantidad = 2, PrecioUnitario = 10 } }
+            Detalles = new List<DetalleCrearDto> { new DetalleCrearDto { VarianteId = varianteId, Cantidad = 2, PrecioUnitario = 10 } }
         });
 
-        await Assert.ThrowsAsync<StockInsuficienteException>(() => service.ConfirmarAsync(venta.Id));
+        // Venta auxiliar para tener un venta_id valido en la factura colisionante.
+        var ventaAux = await service.CreateAsync(new CrearVentaDto
+        {
+            MetodoPago = "Efectivo",
+            Detalles = new List<DetalleCrearDto> { new DetalleCrearDto { VarianteId = varianteId, Cantidad = 1, PrecioUnitario = 10 } }
+        });
+
+        await using (var seed = CreateContext())
+        {
+            seed.ContadoresFactura.Add(new ContadorFactura { Id = 1, Valor = 0, Prefijo = "FAC-", ActualizadoEn = DateTime.UtcNow });
+            seed.Facturas.Add(new Factura { VentaId = ventaAux.Id, Numero = "FAC-000001", Fecha = DateTime.UtcNow, Subtotal = 10, Impuesto = 0, Total = 10, Estado = "emitida", CreadoEn = DateTime.UtcNow });
+            await seed.SaveChangesAsync();
+        }
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => service.ConfirmarAsync(venta.Id));
 
         await using var verify = CreateContext();
         var v = await verify.Variantes.FirstAsync(x => x.Id == varianteId);
-        Assert.Equal(1, v.Stock);
+        Assert.Equal(10, v.Stock);
         Assert.Equal(0, await verify.Facturas.CountAsync(f => f.VentaId == venta.Id));
+        Assert.Equal(1, await verify.Facturas.CountAsync(f => f.VentaId == ventaAux.Id));
         Assert.Equal(0, await verify.MovimientosStock.CountAsync(m => m.ReferenciaTipo == "venta" && m.ReferenciaId == venta.Id));
         var ventaFinal = await verify.Ventas.FirstAsync(x => x.Id == venta.Id);
         Assert.Equal("Pendiente", ventaFinal.EstadoStr);
+        var contador = await verify.ContadoresFactura.FindAsync(1);
+        Assert.NotNull(contador);
+        Assert.Equal(0, contador!.Valor);
     }
 
     [Fact]

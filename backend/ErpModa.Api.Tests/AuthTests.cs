@@ -117,6 +117,13 @@ public sealed class AuthTestFactory : WebApplicationFactory<Program>
         return contexto.Usuarios.AsNoTracking()
             .FirstOrDefault(u => u.Email == Usuario.NormalizarEmail(email))?.PasswordHash;
     }
+
+    public int ContarUsuarios()
+    {
+        using var ambito = Services.CreateScope();
+        var contexto = ambito.ServiceProvider.GetRequiredService<ErpModaDbContext>();
+        return contexto.Usuarios.Count();
+    }
 }
 
 public class AuthTests
@@ -317,6 +324,36 @@ public class AuthTests
             Json(new { email = "otro@erp.com", password = Clave }));
 
         Assert.Equal(HttpStatusCode.Conflict, respuesta.StatusCode);
+    }
+
+    [Fact]
+    public async Task Inicializar_Concurrentemente_SoloCreaUnAdministrador()
+    {
+        using var fabrica = new AuthTestFactory();
+        using var cliente1 = fabrica.CreateClient();
+        using var cliente2 = fabrica.CreateClient();
+        cliente1.DefaultRequestHeaders.Add("X-Bootstrap-Token", fabrica.BootstrapToken);
+        cliente2.DefaultRequestHeaders.Add("X-Bootstrap-Token", fabrica.BootstrapToken);
+
+        // Correos distintos a propósito: el índice único de email NO puede ser la
+        // única defensa. Solo una de las dos inicializaciones debe completarse.
+        using var barrera = new Barrier(2);
+        var correos = new[] { "primero@erp.com", "segundo@erp.com" };
+        var tareas = new[] { cliente1, cliente2 }
+            .Select((cliente, indice) => Task.Run(async () =>
+            {
+                barrera.SignalAndWait();
+                return await cliente.PostAsync("/api/auth/inicializar",
+                    Json(new { email = correos[indice], password = Clave }));
+            }))
+            .ToArray();
+
+        var respuestas = await Task.WhenAll(tareas);
+
+        Assert.Equal(1, respuestas.Count(r => r.StatusCode == HttpStatusCode.OK));
+        Assert.Equal(1, respuestas.Count(r => r.StatusCode == HttpStatusCode.Conflict));
+        Assert.Equal(1, fabrica.ContarUsuarios());
+        Assert.True(fabrica.ExisteUsuario("primero@erp.com") ^ fabrica.ExisteUsuario("segundo@erp.com"));
     }
 
     [Fact]

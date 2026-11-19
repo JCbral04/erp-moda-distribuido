@@ -1,6 +1,7 @@
 -- Esquema de base de datos -- Modulo de Autenticacion (issues #59/#82)
--- PostgreSQL. Script de creacion manual alineado con la entidad Usuario y la
--- migracion `AgregarUsuarios` (ErpModaDbContext).
+-- PostgreSQL. Script de creacion manual alineado con la entidad Usuario tal como
+-- la configura ErpModaDbContext (OnModelCreating). El proyecto NO usa migraciones
+-- EF Core: la tabla se crea ejecutando este script a mano (ver SETUP_INSTRUCTIONS.md).
 -- No se aplica automaticamente. Aplicar manualmente, p.ej.:
 --   docker compose exec -T db psql -U erpuser -d erp_moda < docs/seguridad/usuarios-schema.sql
 --

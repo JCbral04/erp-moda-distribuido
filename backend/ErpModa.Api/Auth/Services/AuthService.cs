@@ -29,6 +29,14 @@ namespace ErpModa.Api.Auth.Services
 
     public class AuthService : IAuthService
     {
+        // Clave fija del lock advisory: todos los procesos que inicializan este ERP
+        // toman el MISMO lock, no uno por petición.
+        private const long ClaveBloqueoInicializacion = 821337;
+
+        // El proveedor en memoria de los tests no ejecuta SQL: una compuerta de
+        // proceso reproduce la exclusión mutua que en PostgreSQL da el advisory lock.
+        private static readonly SemaphoreSlim CompuertaInicializacion = new(1, 1);
+
         private readonly ErpModaDbContext _context;
         private readonly JwtSettings _jwt;
 
@@ -63,6 +71,45 @@ namespace ErpModa.Api.Auth.Services
 
         public async Task<UsuarioResponse> InicializarAdministradorAsync(
             BootstrapAdminRequest request, CancellationToken cancellationToken = default)
+        {
+            if (UsaPostgreSql)
+            {
+                // La comprobación "¿hay usuarios?" y el INSERT ocurren dentro de la
+                // MISMA transacción y bajo un lock advisory de transacción. Dos
+                // peticiones simultáneas (incluso en réplicas distintas) se serializan:
+                // la primera ve la tabla vacía y hace COMMIT; la segunda, al adquirir
+                // el lock, ya ve al administrador y recibe 409. No se debilita el
+                // índice único de email: sigue siendo la última línea de defensa.
+                await using var transaccion = await _context.Database.BeginTransactionAsync(cancellationToken);
+                await _context.Database.ExecuteSqlRawAsync(
+                    "SELECT pg_advisory_xact_lock({0})",
+                    new object[] { ClaveBloqueoInicializacion }, cancellationToken);
+
+                var usuario = await CrearPrimerAdministradorAsync(request, cancellationToken);
+                await transaccion.CommitAsync(cancellationToken);
+                return usuario;
+            }
+
+            // Tests InMemory: no hay SQL ni transacciones relacionales, así que se
+            // serializa dentro del proceso con la misma semántica de "solo uno".
+            await CompuertaInicializacion.WaitAsync(cancellationToken);
+            try
+            {
+                return await CrearPrimerAdministradorAsync(request, cancellationToken);
+            }
+            finally
+            {
+                CompuertaInicializacion.Release();
+            }
+        }
+
+        private bool UsaPostgreSql => string.Equals(
+            _context.Database.ProviderName,
+            "Npgsql.EntityFrameworkCore.PostgreSQL",
+            StringComparison.Ordinal);
+
+        private async Task<UsuarioResponse> CrearPrimerAdministradorAsync(
+            BootstrapAdminRequest request, CancellationToken cancellationToken)
         {
             if (await _context.Usuarios.AnyAsync(cancellationToken))
                 throw new InicializacionNoDisponibleException(

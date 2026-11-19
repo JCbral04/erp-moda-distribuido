@@ -25,8 +25,10 @@ jobs:
       - name: Compilar
         run: dotnet build backend/ErpModa.sln --configuration Release --no-restore
 
-      - name: Ejecutar tests
-        run: dotnet test backend/ErpModa.sln --configuration Release --no-build --no-restore --verbosity normal
+      - name: Ejecutar tests unitarios (InMemory)
+        # La suite de integración con PostgreSQL real corre SOLO en el job
+        # integration-postgres. Mantener los dos jobs separados evita ejecutarla dos veces.
+        run: dotnet test backend/ErpModa.sln --configuration Release --no-build --no-restore --verbosity normal --filter "FullyQualifiedName!~VentasPostgresIntegrationTests"
 
   ia:
     name: Microservicio IA (Python)
@@ -45,3 +47,114 @@ jobs:
 
       - name: Verificar sintaxis de los scripts de IA
         run: python -m py_compile ai/main.py ai/deteccion.py ai/generar_video_prueba.py
+
+  integration-postgres:
+    name: Integración PostgreSQL 16
+    runs-on: ubuntu-latest
+
+    # PostgreSQL 16 real como service container. Credenciales de PRUEBA: son las
+    # mismas que usa la suite VentasPostgresIntegrationTests.cs (Testcontainers)
+    # y las documentadas en el repo. No hay secretos reales ni valores de producción.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: erp_moda_test
+          POSTGRES_USER: erpuser
+          POSTGRES_PASSWORD: erp_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erpuser -d erp_moda_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Variables libpq estándar, reutilizadas por los pasos de psql.
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGDATABASE: erp_moda_test
+      PGUSER: erpuser
+      PGPASSWORD: erp_password
+
+    steps:
+      - name: Clonar el repo
+        uses: actions/checkout@v7
+
+      - name: Instalar .NET 8
+        uses: actions/setup-dotnet@v6.1.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restaurar dependencias
+        run: dotnet restore backend/ErpModa.sln
+
+      - name: Compilar
+        run: dotnet build backend/ErpModa.sln --configuration Release --no-restore
+
+      - name: Aplicar esquemas SQL oficiales (inventario + ventas)
+        # Se aplican contra el service container usando el cliente psql de la MISMA
+        # imagen postgres:16 (sin instalar paquetes extra en el runner).
+        # ON_ERROR_STOP garantiza que cualquier error SQL falle el job.
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/docs:/docs:ro" \
+            -e PGHOST -e PGPORT -e PGDATABASE -e PGUSER -e PGPASSWORD \
+            postgres:16-alpine \
+            sh -c 'set -eu; \
+              psql -v ON_ERROR_STOP=1 -f /docs/inventario/schema.sql; \
+              psql -v ON_ERROR_STOP=1 -f /docs/ventas/schema.sql'
+
+      - name: Verificar restricciones críticas del esquema
+        # Verificación a nivel SQL de que no se debilitaron las restricciones que
+        # protegen la coherencia y la numeración. El comportamiento (intentar
+        # violarlas) ya lo cubre la suite de integración; aquí solo se valida que
+        # los constraints existen y que el singleton está inicializado.
+        run: |
+          cat > /tmp/verify-integration-schema.sql <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint
+              WHERE conname = 'ck_ventas_total_coherente' AND conrelid = 'ventas'::regclass
+            ) THEN
+              RAISE EXCEPTION 'Falta ck_ventas_total_coherente en la tabla ventas';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint
+              WHERE conname = 'ck_contador_factura_singleton' AND conrelid = 'contador_factura'::regclass
+            ) THEN
+              RAISE EXCEPTION 'Falta ck_contador_factura_singleton en contador_factura';
+            END IF;
+            IF (SELECT count(*) FROM contador_factura) <> 1
+               OR NOT EXISTS (SELECT 1 FROM contador_factura WHERE id = 1) THEN
+              RAISE EXCEPTION 'El singleton contador_factura no tiene exactamente la fila id=1';
+            END IF;
+            RAISE NOTICE 'ck_ventas_total_coherente, ck_contador_factura_singleton y singleton id=1 verificados';
+          END
+          $$;
+          SQL
+          docker run --rm --network host \
+            -v /tmp/verify-integration-schema.sql:/verify.sql:ro \
+            -e PGHOST -e PGPORT -e PGDATABASE -e PGUSER -e PGPASSWORD \
+            postgres:16-alpine \
+            psql -v ON_ERROR_STOP=1 -f /verify.sql
+
+      - name: Verificar que la suite de integración está presente
+        # Evita que el job pase "en vacío" si no se descubren los tests (p.ej. tras
+        # un renombrado): dotnet test con un filtro sin coincidencias devuelve 0.
+        run: |
+          tests=$(dotnet test backend/ErpModa.sln --configuration Release --no-build --no-restore \
+            --list-tests --filter "FullyQualifiedName~VentasPostgresIntegrationTests" \
+            | grep -c "VentasPostgresIntegrationTests\." || true)
+          if [ "$tests" -lt 1 ]; then
+            echo "::error::No se descubrió ningún test de VentasPostgresIntegrationTests; el job no puede pasar sin integración real."
+            exit 1
+          fi
+          echo "Tests de integración descubiertos: $tests"
+
+      - name: Pruebas de integración (PostgreSQL 16 real)
+        # Suite existente de PR #114: Testcontainers levanta su propio postgres:16
+        # y aplica los MISMOS schema.sql embebidos. Falla si SQL y modelo EF divergen.
+        run: dotnet test backend/ErpModa.sln --configuration Release --no-build --no-restore --verbosity normal --filter "FullyQualifiedName~VentasPostgresIntegrationTests"

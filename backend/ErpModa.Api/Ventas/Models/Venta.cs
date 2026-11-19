@@ -60,6 +60,10 @@ namespace ErpModa.Api.Ventas.Models
         [MaxLength(255)]
         public string? MotivoAnulacion { get; set; }
 
+        [Column("vendedor_id")]
+        [MaxLength(150)]
+        public string? VendedorId { get; set; }
+
         [Column("creado_en")]
         [Required]
         public DateTime CreadoEn { get; set; } = DateTime.UtcNow;

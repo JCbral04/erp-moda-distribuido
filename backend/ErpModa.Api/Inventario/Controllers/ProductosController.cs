@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using ErpModa.Api.Inventario.DTOs;
 using ErpModa.Api.Inventario.Interfaces;
 
@@ -16,6 +17,7 @@ namespace ErpModa.Api.Inventario.Controllers
         }
 
         [HttpGet]
+        [Authorize(Policy = "InventarioConsulta")]
         public async Task<ActionResult<IEnumerable<ProductoResponseDto>>> GetAll()
         {
             var result = await _service.GetAllAsync();
@@ -23,6 +25,7 @@ namespace ErpModa.Api.Inventario.Controllers
         }
 
         [HttpGet("{id}")]
+        [Authorize(Policy = "InventarioConsulta")]
         public async Task<ActionResult<ProductoResponseDto>> GetById(int id)
         {
             var result = await _service.GetByIdAsync(id);
@@ -32,6 +35,7 @@ namespace ErpModa.Api.Inventario.Controllers
         }
 
         [HttpPost]
+        [Authorize(Policy = "InventarioEscritura")]
         public async Task<ActionResult<ProductoResponseDto>> Create([FromBody] CrearProductoDto crearDto)
         {
             try
@@ -46,6 +50,7 @@ namespace ErpModa.Api.Inventario.Controllers
         }
 
         [HttpPut("{id}")]
+        [Authorize(Policy = "InventarioEscritura")]
         public async Task<ActionResult<ProductoResponseDto>> Update(int id, [FromBody] ActualizarProductoDto actualizarDto)
         {
             try
@@ -62,6 +67,7 @@ namespace ErpModa.Api.Inventario.Controllers
         }
 
         [HttpDelete("{id}")]
+        [Authorize(Policy = "InventarioEscritura")]
         public async Task<IActionResult> Delete(int id)
         {
             var deleted = await _service.DeleteAsync(id);

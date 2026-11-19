@@ -88,6 +88,7 @@ Antes de ejecutar la aplicación, crea las tablas en tu proyecto Supabase:
 1. Abre **Supabase Dashboard → SQL Editor**
 2. Ejecuta `docs/inventario/schema.sql`
 3. Ejecuta `docs/ventas/schema.sql`
+4. Ejecuta `docs/seguridad/usuarios-schema.sql` (tabla `usuarios`, necesaria para la autenticación JWT — ver sección 8)
 
 ---
 
@@ -140,6 +141,109 @@ GET http://localhost:5000/health
 | POST | `/api/Ventas/{id}/confirmar` | Confirmar (genera factura) |
 | POST | `/api/Ventas/{id}/anular` | Anular venta |
 | GET | `/api/Ventas/resumen` | Resumen de ventas |
+
+---
+
+## 8. Autenticación JWT y primer administrador (issue #82)
+
+La API **no guarda secretos en el repositorio**. `appsettings.json` solo contiene el
+emisor (`Jwt:Issuer`), la audiencia (`Jwt:Audience`) y la duración del token
+(`Jwt:DuracionMinutos`, 60). La clave de firma y el token de arranque se entregan
+por configuración externa.
+
+### 8.1 Desarrollo: User Secrets
+
+Desde `backend/ErpModa.Api`:
+
+```powershell
+dotnet user-secrets init   # solo la primera vez
+
+# Genera VALORES NUEVOS Y ALEATORIOS. No los copies a un archivo ni los compartas.
+$jwtKey = [Convert]::ToBase64String([byte[]](1..32 | ForEach-Object { Get-Random -Max 256 }))
+dotnet user-secrets set "Jwt:Key" $jwtKey
+
+$bootstrap = [Convert]::ToBase64String([byte[]](1..32 | ForEach-Object { Get-Random -Max 256 }))
+dotnet user-secrets set "Auth:BootstrapToken" $bootstrap
+```
+
+`Jwt:Key` debe tener **al menos 32 caracteres** (el backend lo valida al arrancar).
+En Development, si no la configuras, se genera una clave efífera solo en memoria y
+se registra un aviso: los tokens dejan de ser válidos al reiniciar. Eso **no es
+válido para producción**.
+
+> No ejecutes `dotnet user-secrets list`: imprime los valores en claro. Para saber
+> si están registrados, comprueba únicamente que existe `secrets.json` (sección 1).
+
+### 8.2 Producción: variables de entorno
+
+| Variable de entorno | Clave de configuración | Uso |
+|---|---|---|
+| `Jwt__Key` | `Jwt:Key` | Clave de firma HMAC-SHA256 (≥32 caracteres). **Obligatoria**: si falta, la aplicación no arranca en `Production`. |
+| `Auth__BootstrapToken` | `Auth:BootstrapToken` | Token de arranque para `/api/auth/inicializar`. Si falta, el endpoint responde `503`. |
+
+Ejemplo (sustituye los marcadores por valores generados **en el servidor**, nunca
+por secretos reales pegados en el repositorio):
+
+```bash
+export Jwt__Key='<CLAVE_ALEATORIA_GENERADA_EN_EL_SERVIDOR>'
+export Auth__BootstrapToken='<TOKEN_ALEATORIO_GENERADO_EN_EL_SERVIDOR>'
+```
+
+En Docker Compose, inyéctalas en el `environment` del servicio backend desde el
+entorno del despliegue o desde un `.env` local excluido por `.gitignore`; **nunca**
+en un `docker-compose.yml` versionado.
+
+### 8.3 Aplicar el esquema de usuarios
+
+El proyecto usa **scripts SQL manuales**: no hay migraciones EF Core y la
+aplicación no crea tablas al arrancar.
+
+```powershell
+# Local con Docker Compose
+docker compose exec -T db psql -U erpuser -d erp_moda -v ON_ERROR_STOP=1 < docs/seguridad/usuarios-schema.sql
+```
+
+En Supabase: **SQL Editor** → pega y ejecuta `docs/seguridad/usuarios-schema.sql`.
+El script es idempotente (`CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`).
+
+### 8.4 Crear el primer administrador
+
+1. Arranca la API y verifica `GET /health` → `200 OK`.
+2. Configura `Auth:BootstrapToken` como se indica en 8.1 u 8.2.
+   Sin él, `/api/auth/inicializar` devuelve `503`; con un valor distinto, `401`.
+3. Envía el token en la cabecera `X-Bootstrap-Token`:
+
+```bash
+curl -i -X POST http://localhost:5000/api/auth/inicializar \
+  -H "Content-Type: application/json" \
+  -H "X-Bootstrap-Token: <TOKEN_DE_ARRANQUE>" \
+  -d '{"email":"admin@tu-dominio.com","password":"<CONTRASEÑA_LARGA_Y_ALEATORIA>"}'
+```
+
+- `200 OK` → responde `id`, `email` y `rol: "Administrador"` (nunca el hash BCrypt).
+- `401` → token de arranque no válido.
+- `409` → ya existe al menos un usuario: el arranque queda deshabilitado.
+
+> Solo puede completarse **una** inicialización. En PostgreSQL la comprobación y
+> el `INSERT` están bajo `pg_advisory_xact_lock` dentro de la misma transacción,
+> así que dos peticiones simultáneas no crean dos administradores.
+
+4. Inicia sesión y usa el JWT para crear el resto de usuarios:
+
+```bash
+curl -i -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@tu-dominio.com","password":"<CONTRASEÑA_LARGA_Y_ALEATORIA>"}'
+
+curl -i -X POST http://localhost:5000/api/auth/registro \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <JWT_DEVUELTO_POR_LOGIN>" \
+  -d '{"email":"vendedor@tu-dominio.com","password":"<OTRA_CONTRASEÑA>","rol":1}'
+```
+
+Roles: `0 = Administrador`, `1 = Vendedor`, `2 = Almacenista`. El JWT dura 60
+minutos; se validan firma, emisor, audiencia y expiración. Un endpoint protegido
+devuelve `401` sin token y `403` si el rol carece de permiso.
 
 ---
 

@@ -28,7 +28,10 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    # 'feat/proveedores-ordenes-compra' es la base del PR #83/#98: sin este
+    # disparador los análisis de seguridad no corrían sobre ese flujo (CI sí lo
+    # hacía). El resto de ramas no se ve afectado.
+    branches: [ "main", "feat/proveedores-ordenes-compra" ]
 
 # Mínimo privilegio: todo denegado por defecto; cada job declara explícitamente sus permisos
 permissions: {}

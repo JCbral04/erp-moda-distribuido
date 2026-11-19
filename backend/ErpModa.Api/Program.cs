@@ -4,6 +4,7 @@ using ErpModa.Api.Auth.Configuration;
 using ErpModa.Api.Auth.Services;
 using ErpModa.Api.Data;
 using ErpModa.Api.Middleware;
+using Microsoft.AspNetCore.Mvc;
 using System.Threading.RateLimiting;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
@@ -19,6 +20,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
+builder.Services.Configure<JsonOptions>(options =>
+{
+    // Evita filtrar mensajes internos de System.Text.Json en respuestas de deserializacion.
+    options.AllowInputFormatterExceptionMessages = false;
+});
 builder.Services.AddHttpContextAccessor();
 
 builder.Services.AddDbContext<ErpModaDbContext>(options =>
@@ -122,7 +128,7 @@ builder.Services.AddRateLimiter(options =>
 
     options.AddPolicy("auth", httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? Guid.NewGuid().ToString(),
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 10,
@@ -133,7 +139,7 @@ builder.Services.AddRateLimiter(options =>
 
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? Guid.NewGuid().ToString(),
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 100,
@@ -170,6 +176,12 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health");
+
+// Endpoint solo para pruebas de middleware de excepciones (no disponible en Production).
+if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
+{
+    app.MapGet("/__test/exception", () => { throw new Exception("boom interno secreto"); });
+}
 
 app.Run();
 

@@ -9,7 +9,7 @@ Ejecutar, en este orden:
 1. `docs/inventario/schema.sql`
 2. `docs/ventas/schema.sql` (incluye `ventas.vendedor_id` y `"IX_ventas_vendedor_id"`)
 3. `docs/seguridad/usuarios-schema.sql` (tabla `usuarios` para JWT)
-4. `docs/proveedores/schema.sql` (del PR #96, cuando ese módulo esté integrado)
+4. `docs/proveedores/schema.sql` (módulo de Proveedores, PR #96)
 
 ## Bases existentes
 
@@ -17,9 +17,22 @@ Aplicar `docs/migraciones/001_auth_y_ownership.sql`. Es idempotente y no destruc
 
 ## Migraciones de EF Core
 
-Se conservan para entornos que decidan usar `dotnet ef database update`. En la rama de integración final se mantiene **una única migración consolidada**, `AgregarUsuarios`, que crea `usuarios` y añade `vendedor_id` a `ventas`, junto con su `Designer` y el `ModelSnapshot`.
+**No se conservan migraciones de EF Core en el repositorio.** El proyecto no ejecuta
+`dotnet ef database update` al arrancar y los scripts SQL manuales son la única
+fuente de verdad del esquema. La aplicación nunca llama a `Migrate()`.
 
-La migración `AddVendedorIdAVentas` del PR #98 **no se incorpora**: haría redundante el cambio y dejaría dos snapshots compitiendo. Su DDL queda reflejado tal cual en el script oficial y en la migración consolidada (misma columna `VARCHAR(150) NULL` y mismo índice `"IX_ventas_vendedor_id"`).
+En concreto se retiraron `AddVendedorIdAVentas`, su `Designer` y
+`ErpModaDbContextModelSnapshot.cs`: mantenerlos junto a los scripts oficiales dejaría
+dos definiciones compitiendo del mismo cambio y daría la impresión de que EF Core
+puede reconstruir el esquema, lo cual no es cierto en este proyecto. El mismo DDL
+(`ventas.vendedor_id VARCHAR(150) NULL` e índice `"IX_ventas_vendedor_id"`) vive en:
+
+- instalación nueva → `docs/ventas/schema.sql`;
+- bases existentes → `docs/migraciones/001_auth_y_ownership.sql`.
+
+Si en el futuro se decide adoptar migraciones EF Core, debe hacerse como cambio de
+estrategia explícito y documentado: elegir UNA fuente de verdad y migrar los scripts
+manuales, no mantener ambas en paralelo.
 
 ## Dependencia con PR #96
 

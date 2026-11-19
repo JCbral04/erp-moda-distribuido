@@ -1,17 +1,23 @@
 using System.Net;
+using System.Text;
+using ErpModa.Api.Auth.Configuration;
+using ErpModa.Api.Auth.Services;
 using ErpModa.Api.Data;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
 using ErpModa.Api.Ventas.Interfaces;
 using ErpModa.Api.Ventas.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
+builder.Services.AddHttpContextAccessor();
 
 builder.Services.AddDbContext<ErpModaDbContext>(options =>
     options.UseNpgsql(
@@ -20,17 +26,77 @@ builder.Services.AddDbContext<ErpModaDbContext>(options =>
 
 builder.Services.AddScoped<IVentasService, VentasService>();
 builder.Services.AddScoped<IProductosService, ProductosService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
 
-// HSTS con opciones explicitas (issue #60): MaxAge 30 dias declarado para que
-// comentario y comportamiento coincidan. Preload e IncludeSubdomains quedan
-// en false a proposito (justificacion en el pipeline).
+// JWT (issue #82): la clave nunca se versiona; se toma de configuración/entorno.
+var jwt = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>() ?? new JwtSettings();
+var claveEfimera = false;
+if (string.IsNullOrWhiteSpace(jwt.Key))
+{
+    if (builder.Environment.IsProduction())
+        throw new InvalidOperationException("Falta la configuracion Jwt:Key (variable de entorno Jwt__Key).");
+    jwt.Key = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    builder.Configuration["Jwt:Key"] = jwt.Key;
+    claveEfimera = true;
+}
+if (Encoding.UTF8.GetByteCount(jwt.Key) < 32)
+    throw new InvalidOperationException("Jwt:Key debe tener al menos 32 caracteres.");
+builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection(JwtSettings.SectionName));
+
+var claveFirma = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Key));
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(opciones =>
+    {
+        opciones.MapInboundClaims = false;
+        opciones.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwt.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwt.Audience,
+            ValidateLifetime = true,
+            RequireExpirationTime = true,
+            ClockSkew = TimeSpan.Zero,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = claveFirma,
+            NameClaimType = System.Security.Claims.ClaimTypes.NameIdentifier,
+            RoleClaimType = System.Security.Claims.ClaimTypes.Role
+        };
+        opciones.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = contexto =>
+            {
+                var claims = contexto.Principal?.Claims;
+                if (claims?.Any(c => c.Type == System.Security.Claims.ClaimTypes.Role) != true)
+                    contexto.Fail("Token sin claim de rol.");
+                if (claims?.Any(c => c.Type == System.Security.Claims.ClaimTypes.NameIdentifier) != true)
+                    contexto.Fail("Token sin identificador de usuario.");
+                return Task.CompletedTask;
+            }
+        };
+    });
+
+builder.Services.AddAuthorization(opciones =>
+{
+    opciones.AddPolicy("Administrador", politica => politica.RequireRole("Administrador"));
+    opciones.AddPolicy("Vendedor", politica => politica.RequireRole("Vendedor"));
+    opciones.AddPolicy("Almacenista", politica => politica.RequireRole("Almacenista"));
+    opciones.AddPolicy("VentasConsulta", politica =>
+        politica.RequireRole("Administrador", "Vendedor", "Almacenista"));
+    opciones.AddPolicy("VentasEscritura", politica =>
+        politica.RequireRole("Administrador", "Vendedor"));
+    opciones.AddPolicy("InventarioConsulta", politica =>
+        politica.RequireRole("Administrador", "Vendedor", "Almacenista"));
+    opciones.AddPolicy("InventarioEscritura", politica =>
+        politica.RequireRole("Administrador", "Almacenista"));
+});
+
+// HSTS con opciones explicitas (issue #60)
 builder.Services.AddHsts(options =>
 {
     options.MaxAge = TimeSpan.FromDays(30);
 });
 
-// Detras de un reverse proxy: aceptar X-Forwarded-Proto/For SOLO del proxy
-// de confianza del despliegue (criterio de la review del #93).
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders =
@@ -46,8 +112,9 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 
-// PRIMERO: corrige esquema/host segun el proxy de confianza ANTES de que
-// HSTS y UseHttpsRedirection evaluen el request (review #93 ronda 3).
+if (claveEfimera)
+    app.Logger.LogWarning("Jwt:Key no configurada: se genero una clave efimera de desarrollo. Configure User Secrets antes de desplegar.");
+
 app.UseForwardedHeaders();
 
 if (app.Environment.IsDevelopment())
@@ -57,14 +124,12 @@ if (app.Environment.IsDevelopment())
 }
 else
 {
-    // HSTS (30 dias). Sin IncludeSubdomains: el ERP se sirve en un solo host;
-    // habilitarlo forzaria HTTPS en subdominios futuros sin certificado y los
-    // romperia. Sin Preload: es decision de dominio del despliegue y no es
-    // revocable una vez enviado a la lista de preload.
     app.UseHsts();
 }
 
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health");
 

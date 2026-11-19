@@ -3,6 +3,9 @@ using System.Text;
 using ErpModa.Api.Auth.Configuration;
 using ErpModa.Api.Auth.Services;
 using ErpModa.Api.Data;
+using ErpModa.Api.Middleware;
+using Microsoft.AspNetCore.Mvc;
+using System.Threading.RateLimiting;
 using ErpModa.Api.Inventario.Interfaces;
 using ErpModa.Api.Inventario.Services;
 using ErpModa.Api.Ventas.Interfaces;
@@ -17,6 +20,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
+builder.Services.Configure<JsonOptions>(options =>
+{
+    // Evita filtrar mensajes internos de System.Text.Json en respuestas de deserializacion.
+    options.AllowInputFormatterExceptionMessages = false;
+});
 builder.Services.AddHttpContextAccessor();
 
 builder.Services.AddDbContext<ErpModaDbContext>(options =>
@@ -107,6 +115,40 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
         builder.Configuration["ProxyTrustedIP"] ?? "127.0.0.1"));
 });
 
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsync(
+            "{\"codigo\":\"rate_limit_exceeded\",\"mensaje\":\"Demasiadas solicitudes. Intente mas tarde.\"}",
+            cancellationToken);
+    };
+
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? Guid.NewGuid().ToString(),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue<int>("RateLimit:AuthPermitLimit", 10),
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? Guid.NewGuid().ToString(),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
+
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<ErpModaDbContext>();
 
@@ -116,6 +158,20 @@ if (claveEfimera)
     app.Logger.LogWarning("Jwt:Key no configurada: se genero una clave efimera de desarrollo. Configure User Secrets antes de desplegar.");
 
 app.UseForwardedHeaders();
+app.Use(async (context, next) =>
+{
+    // En producción se rechaza si no se puede identificar al cliente de forma confiable.
+    if ((app.Environment.IsProduction()) && context.Connection.RemoteIpAddress is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync("{\"codigo\":\"rate_limit_exceeded\",\"mensaje\":\"Cliente no identificable.\"}");
+        return;
+    }
+    await next();
+});
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseRateLimiter();
 
 if (app.Environment.IsDevelopment())
 {

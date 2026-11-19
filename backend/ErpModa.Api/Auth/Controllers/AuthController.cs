@@ -7,11 +7,13 @@ using ErpModa.Api.Auth.DTOs;
 using ErpModa.Api.Auth.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace ErpModa.Api.Auth.Controllers
 {
     [ApiController]
     [Route("api/auth")]
+    [EnableRateLimiting("auth")]
     public class AuthController : ControllerBase
     {
         private const string BootstrapHeader = "X-Bootstrap-Token";

@@ -131,7 +131,7 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? Guid.NewGuid().ToString(),
             factory: _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 10,
+                PermitLimit = builder.Configuration.GetValue<int>("RateLimit:AuthPermitLimit", 10),
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 AutoReplenishment = true
@@ -158,6 +158,18 @@ if (claveEfimera)
     app.Logger.LogWarning("Jwt:Key no configurada: se genero una clave efimera de desarrollo. Configure User Secrets antes de desplegar.");
 
 app.UseForwardedHeaders();
+app.Use(async (context, next) =>
+{
+    // En producción se rechaza si no se puede identificar al cliente de forma confiable.
+    if ((app.Environment.IsProduction()) && context.Connection.RemoteIpAddress is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync("{\"codigo\":\"rate_limit_exceeded\",\"mensaje\":\"Cliente no identificable.\"}");
+        return;
+    }
+    await next();
+});
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseRateLimiter();
 
@@ -176,12 +188,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health");
-
-// Endpoint solo para pruebas de middleware de excepciones (no disponible en Production).
-if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
-{
-    app.MapGet("/__test/exception", () => { throw new Exception("boom interno secreto"); });
-}
 
 app.Run();
 

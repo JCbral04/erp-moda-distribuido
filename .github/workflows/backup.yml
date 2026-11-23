@@ -39,7 +39,7 @@ jobs:
           printf '%s' "$GPG_PASSPHRASE" | gpg --batch --decrypt --passphrase-fd 0 -o /dev/null backup.sql.gz.gpg \
             || { echo "ERROR: el backup cifrado no valida con la passphrase"; exit 1; }
       - name: Subir artifact (unicamente el archivo cifrado)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backup-${{ github.run_id }}
           path: backup.sql.gz.gpg
